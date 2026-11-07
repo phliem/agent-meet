@@ -23,16 +23,43 @@ test('one delivery budget covers both queues and time is rechecked before each r
   }
   try {
     const now = Date.now();
-    await seed(now + 3600000, now - 2 * 86400000);
+    const reminderDinner = await seed(now + 3600000, now - 2 * 86400000);
     const subscription = randomUUID(); subscriptions.push(subscription);
     await sql`INSERT INTO email_subscriptions(id,scope,email,verification_hash,verification_expires_at,unsubscribe_hash)
       VALUES (${subscription},'waitlist',${subscription + '@example.test'},${digest(token())},now()+interval '1 day',${digest(token())})`;
+    const pendingJob = randomUUID();
     await sql`INSERT INTO email_outbox(id,subscription_id,event_key,kind,payload)
-      VALUES (${randomUUID()},${subscription},${subscription},'verification',${sql.json({ to: subscription + '@example.test', subject: 'Synthetic test', text: 'Fixture only' })})`;
+      VALUES (${pendingJob},${subscription},${subscription},'verification',${sql.json({ to: subscription + '@example.test', subject: 'Synthetic test', text: 'Fixture only' })})`;
     let sent = 0;
     const sender = async () => { sent++; return 'sent' as const; };
     await dispatchOutbox(1, sender, Date.now());
     assert.equal(sent, 0, 'an exhausted time budget cannot start a send');
+
+    const updateDinner = await seed(now + 3600000, now - 2 * 86400000);
+    updateDinner.stage = 'area-voting';
+    updateDinner.guests[0].reply = { attending: true, availability: [], diets: [], otherDiet: '', cuisines: {} };
+    await sql`UPDATE dinners SET document=${sql.json(updateDinner)} WHERE id=${updateDinner.id}`;
+    const updateSubscription = randomUUID();
+    await sql`INSERT INTO email_subscriptions(id,scope,dinner_id,guest_id,guest_claim_hash,email,verification_hash,verification_expires_at,unsubscribe_hash,verified_at)
+      VALUES (${updateSubscription},'dinner',${updateDinner.id},${updateDinner.guests[0].id},'synthetic-claim',${updateDinner.guests[0].invitationEmail!},${digest(token())},now()+interval '1 day',${digest(token())},now()-interval '1 minute')`;
+    const event = randomUUID();
+    await sql`INSERT INTO dinner_events(id,dinner_id,kind) VALUES (${event},${updateDinner.id},'area-voting')`;
+    const expiredDinner = await seed(now + 3600000, now - 2 * 86400000);
+    await sql`UPDATE dinners SET expires_at=now()-interval '1 second' WHERE id=${expiredDinner.id}`;
+    const expiredSession = digest(token());
+    await sql`INSERT INTO account_sessions(hash,account_id,access_token,expires_at)
+      VALUES (${expiredSession},${reminderDinner.guests[0].accountId!},'synthetic-provider-token',now()-interval '1 second')`;
+
+    const exhausted = await runJobs({ send: sender, deadline: Date.now() - 1 });
+    assert.deepEqual(exhausted, { sent: 0, fixture: 0, suppressed: 0, retried: 0, reminders: { sent: 0, fixture: 0, suppressed: 0, retried: 0 } });
+    assert.equal(sent, 0);
+    assert.equal((await sql`SELECT status FROM email_outbox WHERE id=${pendingJob}`)[0].status, 'pending');
+    assert.equal((await sql`SELECT id FROM email_outbox WHERE event_key=${event + ':' + updateSubscription}`).length, 0, 'expired callers leave durable events unmaterialized');
+    assert.equal((await sql`SELECT id FROM dinner_events WHERE id=${event}`).length, 1);
+    assert.equal((await sql`SELECT id FROM reminder_jobs WHERE dinner_id=${reminderDinner.id}`).length, 0, 'expired callers skip reminder materialization too');
+    assert.equal((await sql`SELECT id FROM dinners WHERE id=${expiredDinner.id}`).length, 0, 'expiry cleanup still runs');
+    assert.equal((await sql`SELECT hash FROM account_sessions WHERE hash=${expiredSession}`).length, 0);
+    await sql`DELETE FROM dinners WHERE id=${updateDinner.id}`;
     await runJobs({ limit: 1, send: sender });
     assert.equal(sent, 1, 'outbox and reminders share one delivery limit');
     await sql`DELETE FROM dinners WHERE id IN ${sql(dinners)}`;

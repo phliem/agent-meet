@@ -18,7 +18,8 @@
     "invite": "node --env-file-if-exists=.env.local --import tsx scripts/invite.ts",
     "jobs:run": "node --env-file-if-exists=.env.local --import tsx scripts/jobs.ts",
     "providers:smoke": "node --env-file-if-exists=.env.local --import tsx scripts/providers-smoke.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:auth": "node tests/scripts/auth-e2e.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

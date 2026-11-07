@@ -40,7 +40,7 @@ Google Places is deliberately not part of the implemented adapter. Its selected 
 
 ## Request bounds and private information
 
-Requests use only fixed service origins, explicit numeric geographic coordinates or encoded station/postcode input. The adapter never fetches a user-submitted website. It follows no redirects, bounds response accumulation to 2 MB while streaming (including missing or misleading Content-Length), retries at most once on rate limits or server errors and uses per-request timeouts within a total 25-second operation budget. At most four service calls run concurrently. Provider error messages presented to users are generic and never contain keys, raw URLs or private origin input.
+Requests use only fixed service origins, explicit numeric geographic coordinates or encoded station/postcode input. The adapter never fetches a user-submitted website. It follows no redirects, bounds response accumulation to 2 MB while streaming (including missing or misleading Content-Length), retries at most once on network failures, rate limits or server errors and uses per-request timeouts within a total 25-second operation budget. At most four service calls run concurrently. Provider error messages presented to users are generic and never contain keys, raw URLs or private origin input. Operator diagnostics identify only the failing service category (location, transport or restaurants), never the private request.
 
 The public Postcodes.io and TfL services receive the starting location necessary to compute a journey. OpenStreetMap receives only the candidate area coordinates. None of them receive guest names, emails or dietary free text. Source labels and journey minutes appear in shared results, while starting locations stay out of that payload.
 

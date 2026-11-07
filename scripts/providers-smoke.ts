@@ -35,7 +35,7 @@ if (!args.includes('--live') || args.some(value => !['--live', '--full'].include
       }
     }
   } catch (error) {
-    console.error(JSON.stringify({ stage, status: 'failed', code: error instanceof ProviderError ? error.code : 'unexpected-error', ...(error instanceof ProviderError ? { message: error.message } : {}) }));
+    console.error(JSON.stringify({ stage, status: 'failed', code: error instanceof ProviderError ? error.code : 'unexpected-error', ...(error instanceof ProviderError ? { service: error.service, message: error.message } : {}) }));
     process.exitCode = 1;
   }
 }

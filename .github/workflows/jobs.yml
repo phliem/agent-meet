@@ -1,0 +1,52 @@
+name: Dinner delivery worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '2-59/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dinner-delivery-production
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    # Remains inactive until the owner configures and explicitly enables it.
+    if: github.repository == 'phliem/agent-meet' && vars.AGENT_MEET_JOBS_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Trigger the authenticated production worker
+        env:
+          APP_URL: ${{ vars.AGENT_MEET_APP_URL }}
+          CRON_SECRET: ${{ secrets.AGENT_MEET_CRON_SECRET }}
+        run: |
+          node --input-type=module <<'JS'
+          try {
+            const origin = new URL(process.env.APP_URL);
+            const secret = process.env.CRON_SECRET;
+            if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || !secret || secret.length < 24) {
+              throw new Error('Configure the trusted HTTPS origin and worker secret.');
+            }
+            const response = await fetch(new URL('/api/jobs', origin), {
+              method: 'POST', redirect: 'error',
+              headers: { Authorization: 'Bearer ' + secret },
+              signal: AbortSignal.timeout(55_000),
+            });
+            if (!response.ok) throw new Error('Worker request failed with HTTP ' + response.status + '.');
+            const result = await response.json();
+            if (result.ok !== true) throw new Error('Worker did not report success.');
+            console.log('Dinner delivery worker completed.');
+          } catch {
+            console.error('Worker invocation failed. Check the deployment, configured origin and secret; queued jobs remain available for retry.');
+            process.exitCode = 1;
+          }
+          JS

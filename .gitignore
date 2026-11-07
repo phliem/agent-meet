@@ -11,3 +11,6 @@ next-env.d.ts
 playwright-report/
 test-results/
 .vercel/
+
+# Ephemeral certificates for the explicitly invoked local auth browser test
+.auth-e2e/

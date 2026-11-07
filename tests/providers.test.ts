@@ -167,7 +167,21 @@ test('live provider errors, malformed bodies and rate limits never fall back to 
   await assert.rejects(providers.resolveLocation('N1 9AL'), /rejected/);
   assert.equal(attempts, 2);
   await assert.rejects(createProviders({ mode: 'live', fetch: async () => new Response('{') }).resolveLocation('N1 9AL'), /invalid response/);
-  await assert.rejects(createProviders({ mode: 'live', fetch: noNetwork, operationTimeoutMs: -1 }).resolveLocation('N1 9AL'), /too long/);
+  await assert.rejects(createProviders({ mode: 'live', fetch: noNetwork, operationTimeoutMs: -1 }).resolveLocation('N1 9AL'), error => error instanceof ProviderError && error.service === 'location' && /too long/.test(error.message));
+});
+
+test('a transient read-only transport failure retries once, while persistent failure stays sanitised', async () => {
+  let attempts = 0;
+  const fetcher: typeof fetch = async () => {
+    if (++attempts === 1) throw new Error('Private provider diagnostics');
+    return json({ status: 200, result: { postcode: 'SW1A 1AA', latitude: 51.501, longitude: -0.142, region: 'London' } });
+  };
+  const origin = await createProviders({ mode: 'live', fetch: fetcher }).resolveLocation('SW1A 1AA');
+  assert.equal(attempts, 2);
+  assert.equal(origin.label, 'SW1A 1AA');
+  attempts = 0;
+  await assert.rejects(createProviders({ mode: 'live', fetch: async () => { attempts++; throw new Error('API_KEY=private-diagnostic'); } }).resolveLocation('SW1A 1AA'), error => error instanceof ProviderError && error.service === 'location' && !error.message.includes('private-diagnostic'));
+  assert.equal(attempts, 2);
 });
 
 test('live travel and restaurant requests use bounded candidate data and correct return date', async () => {

@@ -22,6 +22,18 @@ The domain must be verified in Resend. The sending domain can differ from the Ve
 
 The app attempts dispatch on signup and should run the worker immediately after a state-change event is committed. `/api/jobs` accepts GET or POST with `Authorization: Bearer <CRON_SECRET>` for retry scheduling. It fails closed when the secret is missing. Pick a scheduler compatible with the actual Vercel plan. A daily schedule is only a delayed recovery mechanism, not a suitable first attempt for an action email. `maxDuration` is 60 seconds and the HTTP worker processes up to four messages, each with a ten-second provider timeout.
 
+### Optional GitHub scheduler
+
+The prepared `.github/workflows/jobs.yml` is disabled until explicitly enabled. After deploying and releasing the workflow onto the default branch, configure this repository's Actions settings:
+
+1. Set variable `AGENT_MEET_APP_URL` to the verified production HTTPS origin, with no path or query.
+2. Set secret `AGENT_MEET_CRON_SECRET` to the same random value as Vercel's `CRON_SECRET` (at least 24 characters).
+3. Set variable `AGENT_MEET_JOBS_ENABLED=true`, run **Dinner delivery worker** manually and check its result before relying on its schedule. Set it back to `false` to stop these invocations.
+
+This calls the existing authenticated endpoint roughly every five minutes, with a 55-second timeout and no redirects. It has no checkout, database credential, participant data or email provider key. It does not enable a paid plan. Jobs remain durable if a run fails. GitHub schedules are [best effort and can be delayed or dropped](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule); in public repositories they can be disabled after 60 days without activity. Check workflow health before a pilot and re-enable it if needed. This is an optional small-pilot trigger, not a delivery-time guarantee. Use one scheduler consistently; concurrent/manual calls remain idempotent.
+
+Vercel's [legacy Cron limits](https://vercel.com/docs/schedules/cron-jobs/usage-and-pricing) allow only daily schedules on Hobby. Its newer beta [Schedules](https://vercel.com/docs/schedules/limits) has different intervals, jitter and run limits. Check the actual plan before choosing a Vercel-native alternative; this repository does not activate either automatically.
+
 ## Delivery and privacy
 
 Verification and unsubscribe use separate random tokens, stored as hashes in the subscription table. Raw links are confined to private outbox payloads. A GET renders a confirmation form and POST changes consent, avoiding mail-scanner GETs silently opting in or withdrawing consent. Withdrawal deletes the subscription and cascades its outbox rows. Repeated removal is safe.
@@ -29,6 +41,8 @@ Verification and unsubscribe use separate random tokens, stored as hashes in the
 The worker checks the current guest claim, attendance, inclusion, dinner expiry and current stage before dispatch. Area-vote emails are suppressed if the guest already voted. Guest reset must delete `email_subscriptions` for that dinner and guest in the reset transaction, which cascades pending delivery. Dinner expiry cascades both. No guest locations, dietary details, attendee lists or email addresses appear in another guest's response or in log messages.
 
 Concurrent workers lock and skip busy outbox rows. Resend receives a stable idempotency key. Retries stop after six attempts or twelve hours, within Resend's documented 24-hour idempotency window. Transport failures remain durable and do not report success. A provider may accept a message immediately before a network failure, which is why the same key and unchanged payload are retained for retry. Failed jobs need operator review and are not silently replayed after the deduplication window.
+
+Dinner actions share a 45-second absolute budget, including background planning and delivery, within the route's 60-second limit. If less than a full planning budget remains, automatic provider work defers to the organiser's retry rather than starting late. Workers also accept the remaining caller budget, stop materialising/delivering when it is spent and reserve five seconds for expiry cleanup. Queued work is retained for the next invocation.
 
 The tables have row-level security enabled with no browser policies. Use a server database owner or a role with appropriate application permissions, never a Supabase anon credential.
 

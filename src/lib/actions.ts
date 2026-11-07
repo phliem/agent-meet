@@ -24,22 +24,22 @@ function failure(error: unknown): ActionResult {
   console.error('Dinner operation failed', error instanceof Error ? error.name : 'unknown');
   return { ok: false, error: 'Unable to complete this action. Check the service configuration and try again.' };
 }
-function scheduleProgress(id: string) {
+function scheduleProgress(id: string, deadline: number) {
   after(async () => {
     try {
       let dinner = await readDinner(id);
-      if (dinner?.stage === 'recommending' && (dinner.experience !== 'v2' || effectiveBudgetBand(dinner))) {
+      if (Date.now() + 25_000 <= deadline && dinner?.stage === 'recommending' && (dinner.experience !== 'v2' || effectiveBudgetBand(dinner))) {
         await planDinner(id, 'areas');
       }
       dinner = await readDinner(id);
-      if (dinner?.stage === 'choosing-restaurant' && !dinner.restaurants.length && !dinner.restaurant) {
+      if (Date.now() + 25_000 <= deadline && dinner?.stage === 'choosing-restaurant' && !dinner.restaurants.length && !dinner.restaurant) {
         await planDinner(id, 'restaurants');
       }
     } catch {
       // The state remains recoverable through the organiser's explicit retry.
       console.error('Recommendation deferred. The organiser can retry.');
     }
-    try { await runJobs(); } catch { console.error('Email delivery deferred.'); }
+    try { await runJobs({ deadline }); } catch { console.error('Email delivery deferred.'); }
   });
 }
 export async function homeContext() {
@@ -83,6 +83,9 @@ export async function loadDinner(id: string): Promise<DinnerView | null> {
   return { ...publicDinner, recommendation: recommendation.recommendation, recommendationFallback: recommendation.fallbackReason, commonBudgetBands: compatibleBudgetBands(dinner), accountRequired: dinner.identityMode === 'account' && !mine && !actor.organiser, guests: dinner.guests.map(g => ({ id: g.id, name: g.name, taken: !!g.claimHash, status: !g.reply ? 'waiting' : g.reply.attending ? 'replied' : 'declined', voted: !!g.ballot })), organiser: actor.organiser, guest: mine ? { id: mine.id, name: mine.name, reply: mine.reply, ballot: mine.ballot } : null, slots: dinner.stage === 'choosing-time' ? sharedSlots(dinner) : [], canReply: ['collecting', 'choosing-time', 'recommending'].includes(dinner.stage) && Date.now() < Date.parse(dinner.deadline) && (!dinner.includedIds || !!mine && dinner.includedIds.includes(mine.id)), googleCalendarUrl: dinner.stage === 'confirmed' ? googleCalendarUrl(dinner) : undefined };
 }
 export async function dinnerAction(id: string, input: unknown): Promise<ActionResult> {
+  // The page's 60-second function limit includes its after() callbacks. Keep a
+  // shared budget from request entry rather than restarting it after planning.
+  const deadline = Date.now() + 45_000;
   try {
     const p = z.object({ type: z.string() }).passthrough().safeParse(input); insist(p.success, 'Unknown action.');
     const c = p.data; const raw = await credentials(id); let issued: string | undefined;
@@ -125,7 +128,7 @@ export async function dinnerAction(id: string, input: unknown): Promise<ActionRe
     } else {
       await changeDinner(id, d => { applyCommand(d, actorFor(d, raw), c); if (c.type === 'reset' && d.identityMode === 'account' && typeof c.guestId === 'string') { const g = d.guests.find(g => g.id === c.guestId); if (g) { g.accountId = undefined; g.remindersAllowed = false; revokeInvitation(d, g.id); } } }, c.type === 'reset' && typeof c.guestId === 'string' ? { unsubscribeGuestId: c.guestId } : undefined);
     }
-    scheduleProgress(id);
+    scheduleProgress(id, deadline);
     return { ok: true, invitationLinks };
   } catch (error) { return failure(error); }
 }

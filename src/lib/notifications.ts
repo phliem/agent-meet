@@ -148,7 +148,8 @@ export const resendSender: EmailSender = async (message, key) => {
   return 'sent';
 };
 
-async function materializeUpdates() {
+async function materializeUpdates(deadline: number) {
+  if (Date.now() >= deadline) return;
   const sql = db();
   const pending = await sql`SELECT e.id AS event_id, e.kind, e.created_at AS event_at, s.id AS subscription_id, s.email, s.guest_id, s.guest_claim_hash, d.document
     FROM dinner_events e JOIN email_subscriptions s ON s.dinner_id = e.dinner_id
@@ -157,10 +158,12 @@ async function materializeUpdates() {
     AND NOT EXISTS (SELECT 1 FROM email_outbox o WHERE o.event_key = e.id || ':' || s.id)
     ORDER BY e.created_at LIMIT 100`;
   for (const row of pending) {
+    if (Date.now() >= deadline) break;
     const dinner = row.document as Dinner;
     const kind = row.kind as 'area-voting' | 'confirmed';
     // Unsubscribe token is only known in the verification outbox. Reuse that URL without putting it in a public read model.
     const verification = await sql`SELECT payload FROM email_outbox WHERE subscription_id = ${row.subscription_id} AND kind = 'verification' LIMIT 1`;
+    if (Date.now() >= deadline) break;
     const unsubscribeUrl = verification[0]?.payload?.unsubscribeUrl;
     const eligible = guestMayReceive(dinner, row.guest_id, row.guest_claim_hash) && typeof unsubscribeUrl === 'string';
     const message = eligible ? updateMessage(dinner, kind, row.email) : undefined;
@@ -231,13 +234,18 @@ export async function dispatchOutbox(limit = 10, send: EmailSender = resendSende
   return counts;
 }
 
-export async function runJobs(options: { send?: EmailSender; limit?: number } = {}) {
+export async function runJobs(options: { send?: EmailSender; limit?: number; deadline?: number } = {}) {
   const limit = Math.max(0, Math.min(options.limit ?? 4, 4));
-  const deadline = Date.now() + 45_000;
-  await materializeUpdates();
-  const result = await dispatchOutbox(limit, options.send, deadline);
+  const deadline = Math.min(options.deadline ?? Infinity, Date.now() + 45_000);
+  // The caller may already have spent time planning. Keep one absolute budget
+  // across that work and both queues, reserving the last five seconds for cleanup.
+  const workDeadline = deadline - 5_000;
+  await materializeUpdates(workDeadline);
+  const result = await dispatchOutbox(limit, options.send, workDeadline);
   const used = Object.values(result).reduce((sum, count) => sum + count, 0);
-  const reminders = await runReminders(options.send ?? resendSender, appUrl(), Math.max(0, limit - used), Date.now, deadline);
+  const reminders = Date.now() < workDeadline
+    ? await runReminders(options.send ?? resendSender, appUrl(), Math.max(0, limit - used), Date.now, workDeadline)
+    : { sent: 0, fixture: 0, suppressed: 0, retried: 0 };
   await db()`DELETE FROM account_sessions WHERE expires_at <= now()`;
   await db()`DELETE FROM dinners WHERE expires_at <= now()`;
   await db()`DELETE FROM email_subscriptions WHERE scope = 'waitlist' AND verified_at IS NULL AND verification_expires_at <= now()`;

@@ -54,6 +54,17 @@ test('availability controls have distinct names and keep entered times after rem
   const [row] = await sql`SELECT document FROM dinners WHERE id=${dinner.id}`;
   expect(row.document.guests[0].reply.availability).toHaveLength(1);
   expect(row.document.guests[0].reply.availability[0].start.slice(0, 10)).toBe(day(8));
+  // Returning guests must be able to edit other answers without retyping their
+  // origin: the provider's example label is presentation, not valid input.
+  await page.reload();
+  await expect(page.getByLabel('Your starting station or postcode')).toHaveValue('Waterloo');
+  await page.getByLabel('Until · time 1', { exact: true }).fill(day(8) + 'T21:30');
+  await page.getByRole('button', { name: 'Save my changes', exact: true }).click();
+  await expect(page.locator('main').getByRole('alert')).toHaveCount(0);
+  await expect.poll(async () => {
+    const [updated] = await sql`SELECT document FROM dinners WHERE id=${dinner.id}`;
+    return updated.document.guests[0].reply.availability[0].end.slice(11, 16);
+  }).toBe('21:30');
 });
 
 test('flexible dinner recovers from no overlap and closes voting with an explicit organiser choice', async ({ browser }) => {

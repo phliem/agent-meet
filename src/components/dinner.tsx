@@ -787,8 +787,8 @@ function ReplyForm({
                 id="origin"
                 name="origin"
                 required
-                defaultValue={reply?.location?.label ?? ""}
-                placeholder="e.g. Brixton or SW9 8HE"
+                defaultValue={reply?.location?.source === "fixture" ? reply.location.label.replace(/ \(example origin\)$/, "") : reply?.location?.label ?? ""}
+                placeholder="e.g. Waterloo or SW1A 1AA"
                 autoComplete="off"
               />
               <p className="field-hint">

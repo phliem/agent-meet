@@ -30,12 +30,16 @@ export function reminderMessage(dinner: Dinner, email: string, origin: string) {
 }
 export async function runReminders(send: EmailSender, origin: string, limit = 10, clock: number | (() => number) = Date.now, deadline = Infinity) {
   const currentTime = typeof clock === 'function' ? clock : () => clock;
+  const counts = { sent: 0, fixture: 0, suppressed: 0, retried: 0 };
+  if (currentTime() >= deadline) return counts;
   const now = currentTime();
   const sql = db(), timestamp = new Date(now);
   const dinners = await sql`SELECT document FROM dinners WHERE expires_at>${timestamp} AND document->>'identityMode'='account' AND document->>'remindersEnabled'='true'`;
   for (const row of dinners) {
+    if (currentTime() >= deadline) break;
     const dinner = row.document as Dinner;
     for (const guest of dinner.guests) {
+      if (currentTime() >= deadline) break;
       if (!reminderCandidate(dinner, guest, now)) continue;
       const due = reminderDue(dinner);
       await sql`INSERT INTO reminder_jobs(id,dinner_id,guest_id,account_id,claim_hash,deadline,due_at,available_at)
@@ -44,9 +48,9 @@ export async function runReminders(send: EmailSender, origin: string, limit = 10
         ON CONFLICT DO NOTHING`;
     }
   }
+  if (currentTime() >= deadline) return counts;
   // Invalidated generations are retained as suppressed audit records, never rescheduled.
   await sql`UPDATE reminder_jobs j SET status='suppressed' FROM dinners d WHERE d.id=j.dinner_id AND j.status='pending' AND (j.deadline<> (d.document->>'deadline')::timestamptz OR d.expires_at<=${timestamp})`;
-  const counts = { sent: 0, fixture: 0, suppressed: 0, retried: 0 };
   for (let n = 0; n < Math.min(Math.max(limit, 0), 25); n++) {
     if (currentTime() + 10_000 > deadline) break;
     const handled = await sql.begin(async tx => {

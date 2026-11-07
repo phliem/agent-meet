@@ -9,7 +9,7 @@ type DietStatus = 'yes' | 'no' | 'unknown';
 type Venue = Restaurant & { dietStatus: Record<string, DietStatus> };
 
 export class ProviderError extends Error {
-  constructor(public readonly code: 'unavailable' | 'invalid-location' | 'unsupported-date' | 'invalid-data', message: string) {
+  constructor(public readonly code: 'unavailable' | 'invalid-location' | 'unsupported-date' | 'invalid-data', message: string, public readonly service?: 'location' | 'transport' | 'restaurants') {
     super(message);
     this.name = 'ProviderError';
   }
@@ -182,6 +182,10 @@ export function createProviders(options: ProviderOptions = {}) {
         try {
           response = await fetcher(url, { ...init, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, Math.min(options.requestTimeoutMs ?? 6_000, remaining))) });
         } catch {
+          if (attempt === 0 && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 150));
+            continue;
+          }
           throw new ProviderError('unavailable', 'A live data service could not be reached. Please try again.');
         }
         if ((response.status === 429 || response.status >= 500) && attempt === 0) {
@@ -201,6 +205,12 @@ export function createProviders(options: ProviderOptions = {}) {
         }
       }
       throw new ProviderError('unavailable', 'A live data service is busy. Please try again.');
+    } catch (error) {
+      if (error instanceof ProviderError && !error.service) {
+        const service = url.hostname === 'api.postcodes.io' ? 'location' : url.hostname === 'api.tfl.gov.uk' ? 'transport' : 'restaurants';
+        throw new ProviderError(error.code, error.message, service);
+      }
+      throw error;
     } finally {
       activeRequests -= 1;
       waiting.shift()?.();

@@ -69,3 +69,5 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser flows against the production server
         run: pnpm test:e2e
+      - name: Run verified-TLS account browser flow against a local provider double
+        run: pnpm test:e2e:auth
