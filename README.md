@@ -69,4 +69,4 @@ GitHub Actions runs the same checks on pushes and pull requests using Node 24, t
 
 ## Open-source release
 
-The intended repository is public. The licence decision is pending owner confirmation. Do not represent the code as licensed under MIT, Apache or another licence until the chosen licence is added. Contributions and deployment examples must use synthetic data and placeholder credentials.
+Agent Meet is published under the [MIT License](LICENSE), copyright 2026 Liem Pham. Third-party dependencies and provider data retain their own licences and attribution requirements. Contributions and deployment examples must use synthetic data and placeholder credentials.

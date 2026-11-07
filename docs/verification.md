@@ -26,4 +26,4 @@ Reminder and update transport tests use a fake sender. They do not establish rea
 
 The OSM restaurant adapter cannot reliably establish price and future opening-hour evidence. Automatic V2 recommendations therefore fall back honestly when evidence is insufficient. Fixture recommendations are synthetic examples. Complete live restaurant coverage remains a release check.
 
-The Lab metadata entry is created with the public repository link. The live application link is empty until a deployment is verified. The full clickable design review, licence selection and production setup remain outstanding.
+The Lab metadata entry is created with the public repository link. The live application link is empty until a deployment is verified. Liem selected MIT; the licence is recorded in LICENSE and package metadata. The full clickable design review and production setup remain outstanding.
