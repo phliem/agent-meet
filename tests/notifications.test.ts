@@ -58,6 +58,7 @@ test('database outbox verifies consent, sends each event once and drops reset or
   process.env.APP_URL = 'http://localhost:3000';
   process.env.EMAIL_MODE = 'fixture';
   const dinner = sampleDinner();
+  const staleDinner = sampleDinner();
   const sql = db();
   let waitlistId: string | undefined;
   try {
@@ -70,11 +71,24 @@ test('database outbox verifies consent, sends each event once and drops reset or
     dinner.stage = 'area-voting';
     dinner.includedIds = ['guest-1'];
     await sql`UPDATE dinners SET document = ${sql.json(dinner)} WHERE id = ${dinner.id}`;
+    // A full batch of invalidated historical recipients must not block a later
+    // valid update. These subscriptions predate a declined/reset guest claim.
+    staleDinner.guests[0].reply!.attending = false;
+    await sql`INSERT INTO dinners (id, document, expires_at) VALUES (${staleDinner.id}, ${sql.json(staleDinner)}, ${staleDinner.expiresAt})`;
+    const staleSubscription = randomUUID();
+    await sql`INSERT INTO email_subscriptions
+      (id, scope, dinner_id, guest_id, guest_claim_hash, email, verification_hash, verification_expires_at, unsubscribe_hash, verified_at)
+      VALUES (${staleSubscription}, 'dinner', ${staleDinner.id}, 'guest-1', 'old-claim', 'stale@example.test', ${randomUUID()}, now() + interval '1 day', ${randomUUID()}, now() - interval '2 minutes')`;
+    await sql`INSERT INTO dinner_events (id,dinner_id,kind,created_at)
+      SELECT ${staleDinner.id} || ':' || n, ${staleDinner.id}, 'area-voting', now() - interval '1 minute' FROM generate_series(1,100) n`;
     await sql`INSERT INTO dinner_events (id,dinner_id,kind) VALUES (${dinner.id + ':vote'}, ${dinner.id}, 'area-voting')`;
     const messages: string[] = [];
     const send = async (message: { text: string }) => { messages.push(message.text); return 'sent' as const; };
     await runJobs({ send });
     await runJobs({ send });
+    const staleRows = await sql`SELECT status,payload FROM email_outbox WHERE subscription_id = ${staleSubscription}`;
+    assert.equal(staleRows.length, 100);
+    assert.ok(staleRows.every(row => row.status === 'suppressed' && Object.keys(row.payload).length === 0));
     assert.equal(messages.length, 1);
     assert.ok(messages[0].includes('/d/' + dinner.id));
     const signupRows = await sql`SELECT id FROM email_subscriptions WHERE dinner_id = ${dinner.id}`;
@@ -110,6 +124,7 @@ test('database outbox verifies consent, sends each event once and drops reset or
   } finally {
     if (waitlistId) await sql`DELETE FROM email_subscriptions WHERE id = ${waitlistId}`;
     await sql`DELETE FROM dinners WHERE id = ${dinner.id}`;
+    await sql`DELETE FROM dinners WHERE id = ${staleDinner.id}`;
     await sql.end();
   }
 });

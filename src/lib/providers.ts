@@ -1,5 +1,6 @@
 import type { Area, Dinner, Guest, Journey, Location, Restaurant, Station } from './model';
 import { effectiveBudgetBand, matchesBudget } from './v2-restaurants';
+import { boundedJson, PublicVenueCache } from './provider-cache';
 
 type Fetcher = typeof fetch;
 type DataMode = 'fixture' | 'live';
@@ -155,7 +156,8 @@ const fixturePostcodes: Record<string, [number, number]> = {
   'SE19SP': [51.505, -0.09], 'E16AN': [51.521, -0.075], 'W21HQ': [51.515, -0.175],
 };
 
-export type ProviderOptions = { mode?: DataMode; fetch?: Fetcher; tflKey?: string; now?: () => Date; requestTimeoutMs?: number; operationTimeoutMs?: number };
+const publicVenueCache = new PublicVenueCache<unknown[]>();
+export type ProviderOptions = { mode?: DataMode; fetch?: Fetcher; tflKey?: string; now?: () => Date; requestTimeoutMs?: number; operationTimeoutMs?: number; venueCache?: PublicVenueCache<unknown[]> };
 
 /** Create a service per operation. Its network deadline and concurrency are bounded. */
 export function createProviders(options: ProviderOptions = {}) {
@@ -163,6 +165,8 @@ export function createProviders(options: ProviderOptions = {}) {
   const fetcher = options.fetch ?? fetch;
   const now = options.now ?? (() => new Date());
   const tflKey = options.tflKey ?? process.env.TFL_APP_KEY;
+  // Custom transports remain isolated unless a test explicitly shares a cache.
+  const venueCache = options.venueCache ?? (options.fetch ? undefined : publicVenueCache);
   const deadline = Date.now() + (options.operationTimeoutMs ?? 25_000);
   let activeRequests = 0;
   const waiting: Array<() => void> = [];
@@ -181,15 +185,17 @@ export function createProviders(options: ProviderOptions = {}) {
           throw new ProviderError('unavailable', 'A live data service could not be reached. Please try again.');
         }
         if ((response.status === 429 || response.status >= 500) && attempt === 0) {
+          await response.body?.cancel().catch(() => undefined);
           await new Promise(resolve => setTimeout(resolve, 150));
           continue;
         }
-        if (response.status === 404) return null;
-        if (!response.ok) throw new ProviderError('unavailable', 'A live data service rejected the request. Check service configuration and try again.');
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
+          if (response.status === 404) return null;
+          throw new ProviderError('unavailable', 'A live data service rejected the request. Check service configuration and try again.');
+        }
         try {
-          const body = await response.text();
-          if (body.length > 2_000_000) throw new Error('Too much data');
-          return JSON.parse(body) as unknown;
+          return await boundedJson(response);
         } catch {
           throw new ProviderError('invalid-data', 'A live data service returned an invalid response. Please try again.');
         }
@@ -250,6 +256,12 @@ export function createProviders(options: ProviderOptions = {}) {
   async function liveStations(): Promise<Station[]> {
     const response = await request(tflUrl(`/StopPoint/${CANDIDATE_STATIONS.map(station => station.id).join(',')}`));
     const points = list(response).map(object);
+    // TfL can return a parent interchange hub rather than the requested stop at
+    // the top level. Resolve the exact requested child, never the hub centroid.
+    for (let index = 0; index < points.length; index++) {
+      if (points.length > 10_000) throw new ProviderError('invalid-data', 'London station data is unavailable. Please try again.');
+      for (const child of list(points[index].children)) points.push(object(child));
+    }
     const stations = CANDIDATE_STATIONS.flatMap(station => {
       const point = points.find(value => value.id === station.id);
       if (!point || !londonBounds(number(point.lat), number(point.lon))) return [];
@@ -262,13 +274,27 @@ export function createProviders(options: ProviderOptions = {}) {
   async function venues(station: Station, guests: Guest[], dinner: Dinner, allowUnverifiedPrice = false): Promise<Restaurant[]> {
     if (mode === 'fixture') return rankRestaurants(fixtureVenues(station, dinner, now()), guests, dinner, allowUnverifiedPrice);
     const query = `[out:json][timeout:8];nwr[amenity=restaurant](around:750,${station.lat},${station.lon});out center 60;`;
-    const data = object(await request(new URL('https://overpass-api.de/api/interpreter'), {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'AgentMeet/0.1 (London dinner planner)' },
-      body: new URLSearchParams({ data: query }).toString(),
-    }));
-    if (data.remark) throw new ProviderError('unavailable', 'Restaurant search did not complete. Please try again.');
-    if (!Array.isArray(data.elements)) throw new ProviderError('invalid-data', 'Restaurant data is unavailable. Please try again.');
-    const restaurants = data.elements.map(value => restaurantFromOsm(value, station, guests)).filter((value): value is Venue => value !== null);
+    const load = async (): Promise<unknown[]> => {
+      const data = object(await request(new URL('https://overpass-api.de/api/interpreter'), {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'AgentMeet/0.1 (London dinner planner)' },
+        body: new URLSearchParams({ data: query }).toString(),
+      }));
+      if (data.remark) throw new ProviderError('unavailable', 'Restaurant search did not complete. Please try again.');
+      if (!Array.isArray(data.elements)) throw new ProviderError('invalid-data', 'Restaurant data is unavailable. Please try again.');
+      return data.elements;
+    };
+    // Only public raw station-area facts are shared. Apply each group's private filters afresh.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new ProviderError('unavailable', 'Live planning took too long. Please try again.');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let elements: unknown[];
+    try {
+      elements = await Promise.race([
+        venueCache ? venueCache.get(query, load) : load(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new ProviderError('unavailable', 'Live planning took too long. Please try again.')), remaining); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    const restaurants = elements.map(value => restaurantFromOsm(value, station, guests)).filter((value): value is Venue => value !== null);
     return rankRestaurants(restaurants, guests, dinner, allowUnverifiedPrice);
   }
 

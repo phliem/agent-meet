@@ -65,6 +65,8 @@ Database integration tests run when `DATABASE_URL` is configured. Use the isolat
 
 The unit/contract test command serialises test files because worker tests intentionally process the shared isolated test database queues. Individual concurrency tests still run competing claims, votes and workers in parallel.
 
+GitHub Actions runs the same checks on pushes and pull requests using Node 24, the `packageManager`-pinned pnpm and a fresh Postgres 17 service. It applies migrations, runs typecheck/lint/unit and database tests, builds the production app, then runs Chromium flows against `pnpm start`. CI supplies disposable database credentials and fixture data/email modes; it needs no repository secrets and does not deploy. Account-provider contracts use mocks; account browser coverage uses synthetic dinner views rather than real OTP delivery.
+
 ## Open-source release
 
 The intended repository is public. The licence decision is pending owner confirmation. Do not represent the code as licensed under MIT, Apache or another licence until the chosen licence is added. Contributions and deployment examples must use synthetic data and placeholder credentials.

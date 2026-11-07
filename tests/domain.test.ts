@@ -12,7 +12,7 @@ function dinner(fixed = false): Dinner {
 }
 function reply(d: Dinner, id: string, start = '2026-11-20T19:00:00Z', end = '2026-11-20T23:00:00Z') {
   const r = parseReply({ attending: true, origin: 'Waterloo', availability: [{ start, end }], cuisines: { Japanese: 'prefer', Mexican: 'no' }, diets: [] }, d, now);
-  applyReply(d, { organiser: false, guestId: id }, r, { label: 'Waterloo', lat: 51.5, lon: -0.1, source: 'fixture' });
+  applyReply(d, { organiser: false, guestId: id }, r, { label: 'Waterloo', lat: 51.5, lon: -0.1, source: 'fixture' }, now);
 }
 const areas: Area[] = ['a', 'b', 'c'].map((id, index) => ({ id, name: id, lat: 51.5, lon: -0.1, journeys: [], longest: 20 + index, explanation: 'Fixture' }));
 function voting() {
@@ -33,13 +33,20 @@ test('fixed date skips the overlap and slot choice', () => {
 });
 test('declining is a completed reply with no private input and excludes a guest', () => {
   const d = dinner(); reply(d, d.guests[0].id);
-  applyReply(d, { organiser: false, guestId: d.guests[1].id }, parseReply({ attending: false }, d, now));
+  applyReply(d, { organiser: false, guestId: d.guests[1].id }, parseReply({ attending: false }, d, now), undefined, now);
   assert.equal(d.stage, 'choosing-time'); assert.equal(d.guests[1].reply?.location, undefined);
   assert.equal(sharedSlots(d, now).length, 5);
 });
 test('all declines do not advance', () => {
-  const d = dinner(); for (const g of d.guests) applyReply(d, { organiser: false, guestId: g.id }, parseReply({ attending: false }, d, now));
+  const d = dinner(); for (const g of d.guests) applyReply(d, { organiser: false, guestId: g.id }, parseReply({ attending: false }, d, now), undefined, now);
   assert.equal(d.stage, 'collecting'); assert.match(d.notice!, /Nobody can attend/);
+});
+test('reply validation uses the supplied clock and rejects the deadline boundary', () => {
+  const d = dinner();
+  const decline = parseReply({ attending: false }, d, now);
+  applyReply(d, { organiser: false, guestId: d.guests[0].id }, decline, undefined, Date.parse(d.deadline) - 1);
+  assert.throws(() => applyReply(d, { organiser: false, guestId: d.guests[1].id }, decline, undefined, Date.parse(d.deadline)), /deadline passed/);
+  assert.equal(d.guests[1].reply, undefined);
 });
 test('no overlap can be reopened after deadline while replies stay intact', () => {
   const d = dinner(); reply(d, d.guests[0].id); reply(d, d.guests[1].id, '2026-11-21T19:00:00Z', '2026-11-21T21:00:00Z');
@@ -68,13 +75,26 @@ test('guest cannot reset, close voting, or select a venue', () => {
   const d = voting(); for (const command of [{ type: 'reset', guestId: d.guests[0].id }, { type: 'close-vote' }, { type: 'manual-restaurant', name: 'X', address: 'Y' }]) assert.throws(() => applyCommand(d, { organiser: false }, command, now), /organiser/);
 });
 test('post-vote planning and reset locks are server enforced', () => {
-  const d = voting(); assert.throws(() => applyReply(d, { organiser: false, guestId: d.guests[0].id }, parseReply({ attending: false }, d, now)), /locked/);
+  const d = voting(); assert.throws(() => applyReply(d, { organiser: false, guestId: d.guests[0].id }, parseReply({ attending: false }, d, now), undefined, now), /locked/);
   assert.throws(() => applyCommand(d, host, { type: 'reset', guestId: d.guests[0].id }, now), /locked/);
 });
 test('reset clears only target reply and claim and invalidates stale results', () => {
   const d = dinner(); d.guests.forEach(g => { g.claimHash = 'claimed'; reply(d, g.id); });
   applyCommand(d, host, { type: 'reset', guestId: d.guests[0].id }, now);
   assert.equal(d.guests[0].claimHash, undefined); assert.equal(d.guests[0].reply, undefined); assert.ok(d.guests[1].reply); assert.equal(d.stage, 'collecting');
+});
+test('reset lets an excluded guest reply again without admitting other excluded guests', () => {
+  const d = dinner();
+  d.guests.push({ id: 'still-excluded', name: 'Pat' });
+  reply(d, d.guests[0].id);
+  applyCommand(d, host, { type: 'continue' }, Date.parse(d.deadline));
+  assert.deepEqual(d.includedIds, [d.guests[0].id]);
+  applyCommand(d, host, { type: 'extend', deadline: '2026-11-19T22:00:00Z' }, Date.parse(d.deadline));
+  applyCommand(d, host, { type: 'reset', guestId: d.guests[1].id }, now);
+  reply(d, d.guests[1].id);
+  assert.equal(d.stage, 'choosing-time');
+  assert.deepEqual(d.includedIds, [d.guests[0].id, d.guests[1].id]);
+  assert.throws(() => reply(d, 'still-excluded'), /continued without/);
 });
 test('manual venue needs organiser review and calendar export has no private data', () => {
   const d = voting(); applyCommand(d, host, { type: 'close-vote' }, now); applyCommand(d, host, { type: 'area', areaId: 'a' }, now);

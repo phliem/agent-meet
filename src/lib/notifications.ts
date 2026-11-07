@@ -71,6 +71,11 @@ async function register(scope: 'dinner' | 'waitlist', email: string, context?: {
       const rows = await tx`SELECT document FROM dinners WHERE id = ${context.dinner.id} FOR SHARE`;
       const current = rows[0]?.document as Dinner | undefined;
       if (!current || !guestMayReceive(current, context.guest.id, context.guest.claimHash || '')) throw new Error('Submit an attending reply before requesting dinner updates.');
+      if (current.identityMode === 'account') {
+        const guest = current.guests.find(item => item.id === context.guest.id);
+        const accounts = guest?.accountId ? await tx`SELECT id FROM accounts WHERE id = ${guest.accountId} AND disabled_at IS NULL FOR SHARE` : [];
+        if (!accounts.length) throw new Error('This account cannot receive dinner updates.');
+      }
     }
     const prior = scope === 'dinner'
       ? await tx<Subscription[]>`SELECT * FROM email_subscriptions WHERE dinner_id = ${context!.dinner.id} AND guest_id = ${context!.guest.id} FOR UPDATE`
@@ -153,15 +158,17 @@ async function materializeUpdates() {
     ORDER BY e.created_at LIMIT 100`;
   for (const row of pending) {
     const dinner = row.document as Dinner;
-    if (!guestMayReceive(dinner, row.guest_id, row.guest_claim_hash)) continue;
     const kind = row.kind as 'area-voting' | 'confirmed';
-    const message = updateMessage(dinner, kind, row.email);
     // Unsubscribe token is only known in the verification outbox. Reuse that URL without putting it in a public read model.
     const verification = await sql`SELECT payload FROM email_outbox WHERE subscription_id = ${row.subscription_id} AND kind = 'verification' LIMIT 1`;
     const unsubscribeUrl = verification[0]?.payload?.unsubscribeUrl;
-    if (typeof unsubscribeUrl !== 'string') continue;
-    await sql`INSERT INTO email_outbox (id, subscription_id, event_key, kind, payload)
-      VALUES (${randomUUID()}, ${row.subscription_id}, ${row.event_id + ':' + row.subscription_id}, ${kind}, ${sql.json({ ...message, text: message.text + '\n\nStop these updates: ' + unsubscribeUrl })}) ON CONFLICT (event_key) DO NOTHING`;
+    const eligible = guestMayReceive(dinner, row.guest_id, row.guest_claim_hash) && typeof unsubscribeUrl === 'string';
+    const message = eligible ? updateMessage(dinner, kind, row.email) : undefined;
+    // Record skipped events too, otherwise the same first 100 invalid recipients
+    // fill every batch and permanently starve later, eligible updates.
+    const payload = message ? { ...message, text: message.text + '\n\nStop these updates: ' + unsubscribeUrl } : {};
+    await sql`INSERT INTO email_outbox (id, subscription_id, event_key, kind, payload, status)
+      VALUES (${randomUUID()}, ${row.subscription_id}, ${row.event_id + ':' + row.subscription_id}, ${kind}, ${sql.json(payload)}, ${eligible ? 'pending' : 'suppressed'}) ON CONFLICT (event_key) DO NOTHING`;
   }
 }
 
@@ -171,11 +178,18 @@ export async function dispatchOutbox(limit = 10, send: EmailSender = resendSende
   for (let n = 0; n < limit; n++) {
     if (Date.now() + 10_000 > deadline) break;
     const handled = await sql.begin(async tx => {
-      const candidates = await tx`SELECT o.id, o.subscription_id, s.dinner_id FROM email_outbox o JOIN email_subscriptions s ON s.id = o.subscription_id WHERE o.status = 'pending' AND o.available_at <= now() ORDER BY o.created_at LIMIT 1`;
+      const candidates = await tx`SELECT o.id, o.subscription_id, s.dinner_id, s.guest_id FROM email_outbox o JOIN email_subscriptions s ON s.id = o.subscription_id WHERE o.status = 'pending' AND o.available_at <= now() ORDER BY o.created_at LIMIT 1`;
       const candidate = candidates[0];
       if (!candidate) return false;
-      // Match reset's lock order: dinner, subscription, then outbox.
+      // Match reset/disable's lock order: dinner, account, subscription, outbox.
       const records = candidate.dinner_id ? await tx`SELECT document FROM dinners WHERE id = ${candidate.dinner_id} FOR SHARE` : [];
+      const dinner = records[0]?.document as Dinner | undefined;
+      let accountActive = true;
+      if (dinner?.identityMode === 'account') {
+        const guest = dinner.guests.find(item => item.id === candidate.guest_id);
+        const accounts = guest?.accountId ? await tx`SELECT id FROM accounts WHERE id = ${guest.accountId} AND disabled_at IS NULL FOR SHARE` : [];
+        accountActive = accounts.length > 0;
+      }
       const subscriptions = await tx<Subscription[]>`SELECT * FROM email_subscriptions WHERE id = ${candidate.subscription_id} FOR SHARE`;
       const subscription = subscriptions[0];
       const jobs = await tx`SELECT * FROM email_outbox WHERE id = ${candidate.id} AND status = 'pending' FOR UPDATE SKIP LOCKED`;
@@ -183,8 +197,7 @@ export async function dispatchOutbox(limit = 10, send: EmailSender = resendSende
       if (!job) return true;
       let eligible = !!subscription;
       if (subscription?.scope === 'dinner') {
-        const dinner = records[0]?.document as Dinner | undefined;
-        eligible = !!dinner && guestMayReceive(dinner, subscription.guest_id!, subscription.guest_claim_hash!);
+        eligible = !!dinner && accountActive && guestMayReceive(dinner, subscription.guest_id!, subscription.guest_claim_hash!);
         if (eligible && job.kind !== 'verification') {
           eligible = !!subscription.verified_at && dinner!.stage === job.kind;
           if (job.kind === 'area-voting' && dinner!.guests.find(guest => guest.id === subscription.guest_id)?.ballot) eligible = false;

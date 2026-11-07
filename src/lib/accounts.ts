@@ -44,6 +44,20 @@ export async function currentAccount(): Promise<AccountIdentity | undefined> {
 export async function requireAccount() {
   const account = await currentAccount(); insist(account, 'Sign in with your verified email to continue.'); return account;
 }
+export async function disableAccountAccess(account: AccountIdentity) {
+  const { db } = await import('./db');
+  await db().begin(async tx => {
+    await tx`UPDATE accounts SET disabled_at=now() WHERE id=${account.id}`;
+    await tx`DELETE FROM account_sessions WHERE account_id=${account.id}`;
+    // Dinner updates may use a separately verified contact address. Revoke the
+    // guest's subscriptions by identity too, rather than only their login email.
+    await tx`DELETE FROM email_subscriptions s WHERE s.scope='dinner' AND
+      (s.email=${account.email} OR EXISTS (
+        SELECT 1 FROM dinners d, jsonb_array_elements(d.document->'guests') guest
+        WHERE d.id=s.dinner_id AND guest->>'id'=s.guest_id AND guest->>'accountId'=${account.id}
+      ))`;
+  });
+}
 export function accountActor(dinner: Dinner, account?: AccountIdentity) {
   return { organiser: !!account && account.id === dinner.organiserAccountId, guestId: account ? dinner.guests.find(g => g.accountId === account.id)?.id : undefined };
 }

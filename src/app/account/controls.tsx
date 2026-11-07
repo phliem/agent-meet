@@ -1,20 +1,27 @@
 'use client';
-import { useState, useTransition } from 'react';
+import { useRef, useState, useTransition } from 'react';
 import { Button } from '@base-ui/react/button';
 import { requestSignIn, verifySignIn, signOut, disableAccount, redeemPersonalInvitation, dinnerAction } from '@/lib/actions';
+import { Status } from '@/components/forms';
 import type { ActionResult } from '@/lib/model';
 export function AccountControls({ signedIn, email: initialEmail, dinnerId, invitation, reminderPreference }: { signedIn: boolean; email?: string; dinnerId?: string; invitation?: string; reminderPreference?: { allowed: boolean; enabled: boolean } | null }) {
   const [email, setEmail] = useState(initialEmail ?? '');
   const [code, setCode] = useState('');
   const [remindersAllowed, setRemindersAllowed] = useState(reminderPreference?.allowed ?? false);
+  const emailForm = useRef<HTMLFormElement>(null);
+  const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [pending, start] = useTransition();
   const perform = (action: () => Promise<ActionResult>, refresh = false) => start(async () => {
+    setError('');
+    setMessage('');
     try {
-      const result = await action(); setMessage(result.error ?? result.message ?? 'Done.');
+      const result = await action();
+      if (!result.ok) setError(result.error ?? 'We could not save that change. Please try again.');
+      else setMessage(result.message ?? 'Done.');
       if (result.ok && result.url) window.location.assign(result.url);
       else if (result.ok && refresh) window.location.reload();
-    } catch { setMessage('Unable to connect. Try again.'); }
+    } catch { setError('Unable to connect. Try again.'); }
   });
   return <div className="stack">
     {signedIn ? <>
@@ -25,15 +32,15 @@ export function AccountControls({ signedIn, email: initialEmail, dinnerId, invit
       <details><summary>Disable account</summary><p>Disabling signs out every device and stops dinner emails. You cannot sign back in. Existing dinner contributions remain until the dinner expires.</p><Button className="button secondary" disabled={pending} onClick={() => { if (window.confirm('Permanently disable your account on every device?')) perform(disableAccount, true); }}>Disable my account</Button></details>
     </> : <>
       <p>Verify your email to return on any device. Sessions expire after an hour; request a fresh code when needed.</p>
-      <form className="stack" onSubmit={e => { e.preventDefault(); perform(() => requestSignIn(email)); }}>
+      <form ref={emailForm} className="stack" onSubmit={e => { e.preventDefault(); perform(() => requestSignIn(email)); }}>
         <label>Email address<input type="email" required autoComplete="email" maxLength={254} value={email} onChange={e => setEmail(e.target.value)} /></label>
         <Button type="submit" className="button" disabled={pending}>Email me a verification code</Button>
       </form>
-      <form className="stack" onSubmit={e => { e.preventDefault(); perform(() => verifySignIn(email, code), true); }}>
-        <label>Email verification code<input required inputMode="numeric" autoComplete="one-time-code" minLength={6} maxLength={10} value={code} onChange={e => setCode(e.target.value)} /></label>
+      <form className="stack" onSubmit={e => { e.preventDefault(); if (emailForm.current?.reportValidity()) perform(() => verifySignIn(email, code), true); }}>
+        <label>Email verification code<input required pattern="[0-9]{6,10}" title="Enter the 6–10 digit code from your email." inputMode="numeric" autoComplete="one-time-code" minLength={6} maxLength={10} value={code} onChange={e => setCode(e.target.value)} /></label>
         <Button type="submit" className="button" disabled={pending}>Verify and sign in</Button>
       </form>
     </>}
-    <p role="status" aria-live="polite">{pending ? 'Working…' : message}</p>
+    <Status error={error} message={pending ? 'Working…' : message} />
   </div>;
 }

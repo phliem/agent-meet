@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountActor, acceptOrResumeInvitation, claimInvitation, issueInvitation, normaliseEmail, revokeInvitation, verifiedIdentity } from '../src/lib/accounts';
+import { randomUUID } from 'node:crypto';
+import { accountActor, acceptOrResumeInvitation, claimInvitation, disableAccountAccess, issueInvitation, normaliseEmail, revokeInvitation, verifiedIdentity } from '../src/lib/accounts';
 import { newDinner } from '../src/lib/domain';
 import { digest } from '../src/lib/security';
+import { db } from '../src/lib/db';
+import { dispatchOutbox, subscribeDinner } from '../src/lib/notifications';
 const now = Date.parse('2026-11-07T12:00:00Z');
 const alex = { id: 'provider-alex', email: 'alex@example.com' };
 const kim = { id: 'provider-kim', email: 'kim@example.com' };
@@ -63,4 +66,50 @@ test('a verified returning guest can reopen their consumed link after the reply 
   assert.equal(acceptOrResumeInvitation(d, invitation, { ...alex }, Date.parse(d.deadline) + 1), guest.id);
   assert.equal(guest.claimHash, claim);
   assert.throws(() => acceptOrResumeInvitation(d, invitation, kim, now), /locked/);
+});
+
+test('disabling an account removes alternate-contact updates and blocks stale consent from sending or registering', { skip: !process.env.DATABASE_URL }, async () => {
+  const sql = db(), dinner = setup();
+  const account = { id: randomUUID(), email: randomUUID() + '@example.test' };
+  const affected = randomUUID(), unrelated = randomUUID(), waitlist = randomUUID(), stale = randomUUID();
+  const alternateEmail = randomUUID() + '@example.test';
+  dinner.expiresAt = new Date(Date.now() + 86400000).toISOString();
+  const guest = dinner.guests[0];
+  guest.accountId = account.id;
+  guest.claimHash = digest('synthetic-claim');
+  guest.reply = { attending: true, availability: [], diets: [], otherDiet: '', cuisines: {} };
+  async function subscription(id: string, guestId: string | null, email: string) {
+    await sql`INSERT INTO email_subscriptions
+      (id,scope,dinner_id,guest_id,guest_claim_hash,email,verification_hash,verification_expires_at,unsubscribe_hash)
+      VALUES (${id},${guestId ? 'dinner' : 'waitlist'},${guestId ? dinner.id : null},${guestId},${guestId ? guest.claimHash! : null},${email},${randomUUID()},now()+interval '1 day',${randomUUID()})`;
+  }
+  try {
+    await sql`INSERT INTO accounts(id,email) VALUES (${account.id},${account.email})`;
+    await sql`INSERT INTO account_sessions(hash,account_id,access_token,expires_at) VALUES (${randomUUID()},${account.id},'synthetic-provider-token',now()+interval '1 hour')`;
+    await sql`INSERT INTO dinners(id,document,expires_at) VALUES (${dinner.id},${sql.json(dinner)},${dinner.expiresAt})`;
+    await subscription(affected, guest.id, alternateEmail);
+    await subscription(unrelated, dinner.guests[1].id, 'other@example.test');
+    await subscription(waitlist, null, account.email);
+    await disableAccountAccess(account);
+    assert.ok((await sql`SELECT disabled_at FROM accounts WHERE id=${account.id}`)[0].disabled_at);
+    assert.equal((await sql`SELECT hash FROM account_sessions WHERE account_id=${account.id}`).length, 0);
+    const remaining = await sql`SELECT id FROM email_subscriptions WHERE id IN ${sql([affected, unrelated, waitlist])}`;
+    assert.deepEqual(remaining.map(row => row.id).sort(), [unrelated, waitlist].sort());
+
+    // Even a stale in-flight registration must recheck account disable under lock.
+    await assert.rejects(subscribeDinner({ dinner, guest }, alternateEmail), /cannot receive/);
+    // Defence at delivery also suppresses a subscription retained by older code.
+    await subscription(stale, guest.id, alternateEmail);
+    await sql`INSERT INTO email_outbox(id,subscription_id,event_key,kind,payload)
+      VALUES (${randomUUID()},${stale},${'verify:' + stale},'verification',${sql.json({ to: alternateEmail, subject: 'Synthetic', text: 'Synthetic' })})`;
+    let sends = 0;
+    const result = await dispatchOutbox(1, async () => { sends++; return 'sent'; });
+    assert.equal(sends, 0);
+    assert.equal(result.suppressed, 1);
+  } finally {
+    await sql`DELETE FROM email_subscriptions WHERE id=${waitlist}`;
+    await sql`DELETE FROM dinners WHERE id=${dinner.id}`;
+    await sql`DELETE FROM accounts WHERE id=${account.id}`;
+    await sql.end();
+  }
 });

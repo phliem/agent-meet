@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, type FormEvent } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@base-ui/react/button";
 import { createDinner, redeemPilot } from "@/lib/actions";
@@ -44,8 +44,12 @@ export function Status({
   error?: string;
   message?: string;
 }) {
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (error) errorRef.current?.focus();
+  }, [error]);
   return error ? (
-    <p className="feedback error" role="alert">
+    <p ref={errorRef} tabIndex={-1} className="feedback error" role="alert">
       {error}
     </p>
   ) : message ? (

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Area, Dinner, Guest } from '../src/lib/model';
 import { CANDIDATE_STATIONS, ProviderError, createProviders, londonJourneyParameters, rankAreas, rankRestaurants, restaurantFromOsm } from '../src/lib/providers';
+import { PublicVenueCache } from '../src/lib/provider-cache';
 
 const start = '2026-11-07T19:00:00.000Z';
 const now = () => new Date('2026-11-07T12:00:00.000Z');
@@ -17,6 +18,47 @@ function dinner(guests = [guest()]): Dinner {
 }
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 const noNetwork: typeof fetch = async () => { throw new Error('Fixture tried the network'); };
+
+test('a short-lived caller times out without cancelling another caller sharing its venue load', async () => {
+  const cache = new PublicVenueCache<unknown[]>();
+  const plan = dinner();
+  plan.dataMode = 'live';
+  plan.areas = [{ ...CANDIDATE_STATIONS[0], journeys: [], longest: 0, explanation: '' }];
+  plan.selectedAreaId = plan.areas[0].id;
+  let requests = 0;
+  const fetcher: typeof fetch = async () => {
+    requests++;
+    await new Promise(resolve => setTimeout(resolve, 80));
+    return json({ elements: [] });
+  };
+  const longer = createProviders({ mode: 'live', fetch: fetcher, venueCache: cache }).restaurantSuggestions(plan);
+  await assert.rejects(createProviders({ mode: 'live', fetch: fetcher, venueCache: cache, operationTimeoutMs: 5 }).restaurantSuggestions(plan), /too long/);
+  assert.deepEqual(await longer, []);
+  assert.equal(requests, 1);
+});
+
+test('shared public venue cache reapplies private cuisine filters separately for each dinner', async () => {
+  const cache = new PublicVenueCache<unknown[]>();
+  let requests = 0;
+  const fetcher: typeof fetch = async () => {
+    requests++;
+    return json({ elements: ['japanese', 'thai'].map((cuisine, index) => ({ id: index + 1, type: 'node', lat: 51.53, lon: -0.12, tags: { amenity: 'restaurant', name: cuisine, cuisine } })) });
+  };
+  const first = dinner(), second = dinner();
+  for (const plan of [first, second]) {
+    plan.dataMode = 'live';
+    plan.areas = [{ ...CANDIDATE_STATIONS[0], journeys: [], longest: 0, explanation: '' }];
+    plan.selectedAreaId = plan.areas[0].id;
+  }
+  second.guests[0].reply!.cuisines = { Japanese: 'no' };
+  second.guests[0].reply!.diets = ['Halal'];
+  const [all, filtered] = await Promise.all([first, second].map(plan => createProviders({ mode: 'live', fetch: fetcher, venueCache: cache }).restaurantSuggestions(plan)));
+  assert.equal(requests, 1);
+  assert.equal(all.length, 2);
+  assert.deepEqual(filtered.map(venue => venue.name), ['thai']);
+  assert.ok(!all.some(venue => venue.dietaryEvidence.some(evidence => evidence.startsWith('Halal:'))));
+  assert.match(filtered[0].dietaryEvidence.join(' '), /Halal: unknown/);
+});
 
 test('fixture location and complete recommendation flow are deterministic without network', async () => {
   const providers = createProviders({ mode: 'fixture', fetch: noNetwork });
@@ -99,6 +141,24 @@ test('live station lookup requires an exact resolved station and does not leak p
   assert.equal((await createProviders({ mode: 'live', fetch: fetcher }).resolveLocation('Bank')).source, 'Transport for London');
   await assert.rejects(createProviders({ mode: 'live', fetch: fetcher }).resolveLocation('Mile'), /more specific station/);
   await assert.rejects(createProviders({ mode: 'live', fetch: async () => { throw new Error('API_KEY=private-secret'); } }).resolveLocation('Bank'), error => error instanceof ProviderError && !error.message.includes('private-secret'));
+});
+
+test('TfL parent interchange responses resolve the exact station child rather than rejecting all live areas', async () => {
+  const child = { ...CANDIDATE_STATIONS[0], lat: 51.5309, lon: -0.1239 };
+  const fetcher: typeof fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith('/StopPoint/')) return json([{ id: 'HUBKGX', lat: 51.531683, lon: -0.123538, children: [{ id: 'nested-interchange', children: [child] }] }]);
+    if (url.hostname === 'overpass-api.de') return json({ elements: [{ id: 1, type: 'node', lat: child.lat, lon: child.lon, tags: { amenity: 'restaurant', name: 'Public example venue' } }] });
+    assert.ok(url.pathname.includes(`${child.lat},${child.lon}`), 'use the exact child coordinates for journeys');
+    return json({ journeys: [{ duration: 25 }] });
+  };
+  const providers = createProviders({ mode: 'live', fetch: fetcher, now });
+  const origin = await providers.resolveLocation('King’s Cross');
+  assert.equal(origin.lat, child.lat);
+  assert.equal(origin.lon, child.lon);
+  const areas = await providers.recommendAreas({ ...dinner(), dataMode: 'live' });
+  assert.equal(areas.length, 1);
+  assert.equal(areas[0].id, child.id);
 });
 
 test('live provider errors, malformed bodies and rate limits never fall back to fixtures', async () => {

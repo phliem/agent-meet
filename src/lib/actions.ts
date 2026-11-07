@@ -15,7 +15,7 @@ import { planDinner } from './planning';
 import { runJobs } from './notifications';
 import type { ActionResult, DinnerView } from './model';
 import { compatibleBudgetBands, restaurantRecommendation, effectiveBudgetBand } from './v2-restaurants';
-import { accountCookie, accountCookieOptions, currentAccount, requireAccount, normaliseEmail, providerRequest, verifiedIdentity, issueInvitation, revokeInvitation, acceptOrResumeInvitation } from './accounts';
+import { accountCookie, accountCookieOptions, currentAccount, requireAccount, normaliseEmail, providerRequest, verifiedIdentity, disableAccountAccess, issueInvitation, revokeInvitation, acceptOrResumeInvitation } from './accounts';
 
 function failure(error: unknown): ActionResult {
   if (error instanceof UserError) return { ok: false, error: error.message };
@@ -115,8 +115,7 @@ export async function dinnerAction(id: string, input: unknown): Promise<ActionRe
       insist(snapshot.dataMode === (process.env.DATA_MODE === 'live' ? 'live' : 'fixture'), 'This dinner uses a different data mode. Restore that mode before changing its reply.');
       const reply = parseReply(c.reply, snapshot);
       const location = reply.attending ? await resolveLocation(reply.origin!) : undefined;
-      await changeDinner(id, d => applyReply(d, actorFor(d, raw), reply, location), { expectedVersion: snapshot.version });
-      if (!reply.attending) await db()`DELETE FROM email_subscriptions WHERE dinner_id = ${id} AND guest_id = ${actor.guestId}`;
+      await changeDinner(id, d => applyReply(d, actorFor(d, raw), reply, location), { expectedVersion: snapshot.version, unsubscribeGuestId: !reply.attending ? actor.guestId : undefined });
     } else if (c.type === 'recommend') {
       const snapshot = await readDinner(id); insist(snapshot, 'Dinner not found.'); insist(actorFor(snapshot, raw).organiser, 'Only the organiser can get recommendations.');
       await planDinner(id, 'areas');
@@ -124,7 +123,7 @@ export async function dinnerAction(id: string, input: unknown): Promise<ActionRe
       const snapshot = await readDinner(id); insist(snapshot, 'Dinner not found.'); insist(actorFor(snapshot, raw).organiser, 'Only the organiser can get restaurants.');
       await planDinner(id, 'restaurants');
     } else {
-      await changeDinner(id, d => { applyCommand(d, actorFor(d, raw), c); if (c.type === 'reset' && d.identityMode === 'account' && typeof c.guestId === 'string') { const g = d.guests.find(g => g.id === c.guestId); if (g) { g.accountId = undefined; g.remindersAllowed = false; revokeInvitation(d, g.id); } } }, c.type === 'reset' && typeof c.guestId === 'string' ? { resetGuestId: c.guestId } : undefined);
+      await changeDinner(id, d => { applyCommand(d, actorFor(d, raw), c); if (c.type === 'reset' && d.identityMode === 'account' && typeof c.guestId === 'string') { const g = d.guests.find(g => g.id === c.guestId); if (g) { g.accountId = undefined; g.remindersAllowed = false; revokeInvitation(d, g.id); } } }, c.type === 'reset' && typeof c.guestId === 'string' ? { unsubscribeGuestId: c.guestId } : undefined);
     }
     scheduleProgress(id);
     return { ok: true, invitationLinks };
@@ -177,11 +176,7 @@ export async function signOut(): Promise<ActionResult> {
 export async function disableAccount(): Promise<ActionResult> {
   try {
     const account = await requireAccount();
-    await db().begin(async tx => {
-      await tx`UPDATE accounts SET disabled_at=now() WHERE id=${account.id}`;
-      await tx`DELETE FROM account_sessions WHERE account_id=${account.id}`;
-      await tx`DELETE FROM email_subscriptions WHERE scope='dinner' AND email=${account.email}`;
-    });
+    await disableAccountAccess(account);
     (await cookies()).set(accountCookie, '', { ...accountCookieOptions, maxAge: 0 });
     return { ok: true, message: 'Account disabled on every device. Existing dinner contributions remain until dinner expiry.' };
   } catch (error) { return failure(error); }

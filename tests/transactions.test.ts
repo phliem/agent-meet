@@ -19,6 +19,20 @@ test('guest claims, stale results and simultaneous vote closure remain atomic', 
     assert.equal(claims.filter(result => result.status === 'fulfilled').length, 1);
     assert.equal(claims.filter(result => result.status === 'rejected').length, 1);
     const saved = (await readDinner(dinner.id))!;
+    const guestId = saved.guests[0].id;
+    const subscriptionId = token();
+    await sql`INSERT INTO email_subscriptions (id,scope,dinner_id,guest_id,guest_claim_hash,email,verification_hash,verification_expires_at,unsubscribe_hash)
+      VALUES (${subscriptionId},'dinner',${dinner.id},${guestId},${saved.guests[0].claimHash!},'guest@example.test',${digest(token())},${future(1)},${digest(token())})`;
+    await assert.rejects(changeDinner(dinner.id, current => {
+      current.title = 'Must roll back';
+      throw new Error('Synthetic rejection');
+    }, { unsubscribeGuestId: guestId }), /Synthetic rejection/);
+    assert.equal((await sql`SELECT id FROM email_subscriptions WHERE id=${subscriptionId}`).length, 1);
+    await changeDinner(dinner.id, current => {
+      current.guests[0].reply = { attending: false, availability: [], diets: [], otherDiet: '', cuisines: {} };
+    }, { unsubscribeGuestId: guestId });
+    assert.equal((await readDinner(dinner.id))!.guests[0].reply?.attending, false);
+    assert.equal((await sql`SELECT id FROM email_subscriptions WHERE id=${subscriptionId}`).length, 0);
     await assert.rejects(changeDinner(dinner.id, current => { current.title = 'Must not persist'; }, { expectedVersion: saved.version - 1 }), /updated/);
     assert.equal((await readDinner(dinner.id))!.title, dinner.title);
     await changeDinner(dinner.id, current => {

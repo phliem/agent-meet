@@ -4,11 +4,16 @@ Verified locally on 7 November 2026.
 
 - TypeScript no-emit check and ESLint pass.
 - Production Next.js build passes.
-- 58 unit, provider contract and isolated Postgres integration tests pass without skips.
-- Four Playwright scenarios pass, including the six-person V1 dinner flow, a separate-browser claim/privacy check, account-dinner public-view isolation, and V2 venue-evidence/fallback presentation.
+- 71 unit, provider contract and isolated Postgres integration tests pass without skips.
+- Seven Playwright scenarios pass together against the production build, including the six-person V1 dinner flow, a separate-browser claim/privacy check, account-dinner public-view isolation, V2 venue-evidence/fallback presentation, form network-error recovery, availability-window removal, and the complete flexible-date no-overlap/reopen/early-vote-closure flow. Each spec owns its database fixture connection.
 - Independent read-only review found a doubled worker budget and stale reminder eligibility time. Both were fixed with a regression test covering the shared delivery cap and a slow earlier send crossing a deadline.
 - A separate regression protects returning account guests opening an already-consumed invitation after the reply deadline.
 - Provider work is deduplicated per dinner with database leases, and stale results are rejected by version checks.
+- A subsequent independent review fixed skipped email events starving later updates, disabled accounts retaining alternate-contact subscriptions, reset guests remaining excluded, and automatic selection of recommended venues. Decline subscription cleanup is now transactional. Each fix has regression coverage.
+- Provider payloads are bounded while streaming. Public raw venue responses have a bounded, per-process cache; private filters are reapplied per dinner and cache consumers keep their own operation deadlines. These constraints have fake-transport regression coverage.
+- A live smoke check exposed TfL interchange hubs wrapping the requested station IDs. The adapter now finds exact child stops; a nested-hub contract regression passes. Public postcode lookup and a separate public timed TfL journey succeeded. The full live smoke still reports a service-unavailable error, so complete live coverage remains unverified.
+- Calendar text handles lone carriage returns as well as LF/CRLF without adding properties or events.
+- A commit-pinned GitHub Actions workflow now provisions disposable Postgres, checks the code and runs production browser flows. Local equivalent checks passed; a remote run must be observed separately.
 
 V2 requires explicit enablement for new dinners. Existing V1 dinners retain their original identity and behaviour. The Supabase authentication adapter has no development authentication bypass. Its network contract is tested with mocks; actual provider configuration, inbox OTP and cross-device HTTPS sign-in still need live verification.
 

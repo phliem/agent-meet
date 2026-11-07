@@ -75,8 +75,8 @@ export function ensureReplyOpen(d: Dinner, now = Date.now()) {
   insist(preVote(d), 'Replies are locked once area voting starts.');
   insist(now < Date.parse(d.deadline), 'The reply deadline passed. Ask the organiser to extend it.');
 }
-export function applyReply(d: Dinner, actor: Actor, reply: ReturnType<typeof parseReply>, location?: import('./model').Location) {
-  ensureReplyOpen(d);
+export function applyReply(d: Dinner, actor: Actor, reply: ReturnType<typeof parseReply>, location?: import('./model').Location, now = Date.now()) {
+  ensureReplyOpen(d, now);
   const guest = d.guests.find(g => g.id === actor.guestId);
   insist(guest, 'Claim your guest name first.');
   insist(!d.includedIds || d.includedIds.includes(guest.id), 'The organiser already continued without this guest.');
@@ -181,6 +181,9 @@ export function applyCommand(d: Dinner, actor: Actor, input: unknown, now = Date
     const guest = d.guests.find(g => g.id === c.guestId); insist(guest, 'Guest not found.');
     guest.reply = undefined; guest.ballot = undefined; guest.claimHash = undefined;
     guest.accountId = undefined; guest.remindersAllowed = false;
+    // Reset is the organiser's explicit way to let this guest reply again,
+    // including a guest previously excluded by continuing with respondents.
+    if (d.includedIds && !d.includedIds.includes(guest.id)) d.includedIds.push(guest.id);
     d.budgetBand = undefined; d.recommendation = undefined;
     d.stage = 'collecting'; d.selectedStart = undefined; d.areas = []; d.restaurants = []; d.notice = 'Guest reply reset. They can claim their name again from the shared link.';
   } else throw new UserError('Unknown dinner action.');
@@ -195,5 +198,4 @@ export function installRestaurants(d: Dinner, venues: Restaurant[]) {
   insist(d.stage === 'choosing-restaurant', 'Choose an area first.'); d.restaurants = venues;
   const result = restaurantRecommendation(d);
   d.recommendation = result.recommendation;
-  if (result.recommendation && !d.restaurant) d.restaurant = venues.find(venue => venue.id === result.recommendation!.restaurantId);
 }

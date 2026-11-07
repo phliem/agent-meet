@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { db } from "../src/lib/db";
+import postgres from "postgres";
+
+// Each spec owns its fixture connection; Playwright may reuse a worker across files.
+const sql = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
 import { digest, token } from "../src/lib/security";
 
 const screenshotDir = process.env.E2E_SCREENSHOT_DIR || "test-results";
@@ -7,14 +10,14 @@ const day = (offset: number) =>
   new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
 
 test.afterAll(async () => {
-  await db().end();
+  await sql.end();
 });
 
 test("an invited organiser and two browser-bound guests confirm a dinner", async ({
   browser,
 }) => {
   const raw = token();
-  await db()`INSERT INTO pilot_invites (hash, expires_at) VALUES (${digest(raw)}, now() + interval '1 hour')`;
+  await sql`INSERT INTO pilot_invites (hash, expires_at) VALUES (${digest(raw)}, now() + interval '1 hour')`;
   const host = await browser.newContext({
     viewport: { width: 1280, height: 900 },
   });
@@ -186,7 +189,7 @@ test("an invited organiser and two browser-bound guests confirm a dinner", async
 
 test("six friends complete the same-link dinner flow", async ({ browser }) => {
   const raw = token();
-  await db()`INSERT INTO pilot_invites (hash, expires_at) VALUES (${digest(raw)}, now() + interval '1 hour')`;
+  await sql`INSERT INTO pilot_invites (hash, expires_at) VALUES (${digest(raw)}, now() + interval '1 hour')`;
   const names = ["Sam", "Alex", "Priya", "Rory", "Morgan", "Jo"];
   const stations = [
     "Bank",

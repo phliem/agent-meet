@@ -728,7 +728,7 @@ function ReplyForm({
                 {windows.map((window, index) => (
                   <div className="availability-row" key={window.id}>
                     <div className="field">
-                      <label htmlFor={`start-${index}`}>From</label>
+                      <label htmlFor={`start-${index}`}>From · time {index + 1}</label>
                       <input
                         id={`start-${index}`}
                         name={`start-${index}`}
@@ -739,7 +739,7 @@ function ReplyForm({
                       />
                     </div>
                     <div className="field">
-                      <label htmlFor={`end-${index}`}>Until</label>
+                      <label htmlFor={`end-${index}`}>Until · time {index + 1}</label>
                       <input
                         id={`end-${index}`}
                         name={`end-${index}`}
@@ -753,6 +753,7 @@ function ReplyForm({
                       <Button
                         type="button"
                         className="text-button"
+                        aria-label={`Remove time ${index + 1}`}
                         onClick={() =>
                           setWindows(windows.filter((w) => w.id !== window.id))
                         }
