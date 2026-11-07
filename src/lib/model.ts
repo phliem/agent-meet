@@ -1,0 +1,18 @@
+export const CUISINES = ['Chinese', 'Thai', 'Indian', 'Japanese', 'Korean', 'Italian', 'Mexican', 'Vietnamese', 'Middle Eastern'] as const;
+export const DIETS = ['Vegetarian', 'Vegan', 'Gluten-free', 'Halal', 'Kosher', 'Dairy-free', 'Nut-free'] as const;
+export type CuisinePreference = 'prefer' | 'okay' | 'no';
+export type Stage = 'collecting' | 'choosing-time' | 'recommending' | 'area-voting' | 'choosing-restaurant' | 'confirmed';
+export type TimeWindow = { start: string; end: string };
+export type Location = { label: string; lat: number; lon: number; source: string };
+export type Reply = { attending: boolean; availability: TimeWindow[]; location?: Location; diets: string[]; otherDiet: string; cuisines: Record<string, CuisinePreference> };
+export type Guest = { id: string; name: string; claimHash?: string; reply?: Reply; ballot?: Ballot };
+export type Ballot = { favourite: string | null; acceptable: string[]; none: boolean };
+export type Station = { id: string; name: string; lat: number; lon: number };
+export type Journey = { guestId: string; outbound: number; homeward: number };
+export type Area = Station & { journeys: Journey[]; longest: number; explanation: string };
+export type Restaurant = { id: string; name: string; address: string; mapUrl: string; sourceUrl: string; cuisines: string[]; price: 'low' | 'medium' | 'high' | 'unknown'; dietaryEvidence: string[]; hours: string; station?: string; manual?: boolean };
+export type Dinner = { id: string; title: string; hostName: string; hostHash: string; createdAt: string; expiresAt: string; mode: 'fixed' | 'flexible'; dateStart: string; dateEnd: string; deadline: string; duration: number; fixedStart?: string; stage: Stage; guests: Guest[]; includedIds: string[] | null; selectedStart?: string; areas: Area[]; selectedAreaId?: string; restaurants: Restaurant[]; restaurant?: Restaurant; confirmedAt?: string; votesClosed: boolean; version: number; notice?: string; dataMode: 'fixture' | 'live' };
+export type GuestSummary = { id: string; name: string; taken: boolean; status: 'waiting' | 'replied' | 'declined'; voted: boolean };
+export type DinnerView = Omit<Dinner, 'hostHash' | 'guests'> & { guests: GuestSummary[]; organiser: boolean; guest: { id: string; name: string; reply?: Reply; ballot?: Ballot } | null; slots: string[]; canReply: boolean; googleCalendarUrl?: string };
+export type ActionResult = { ok: boolean; error?: string; url?: string; message?: string };
+export const fixtureMode = () => process.env.DATA_MODE !== 'live';
