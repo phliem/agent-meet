@@ -11,7 +11,13 @@ import {
 import { useRouter } from "next/navigation";
 import { Button } from "@base-ui/react/button";
 import { dinnerAction } from "@/lib/actions";
-import { CUISINES, DIETS, type DinnerView, type Restaurant } from "@/lib/model";
+import {
+  CUISINES,
+  DIETS,
+  type DinnerView,
+  type Restaurant,
+  type PriceBand,
+} from "@/lib/model";
 import { EmailSignup, Waitlist, Status, londonISO, londonInput } from "./forms";
 
 const timeFormat = new Intl.DateTimeFormat("en-GB", {
@@ -33,6 +39,11 @@ const dateOnly = (value: string) =>
   dateFormat.format(new Date(`${value.slice(0, 10)}T12:00:00Z`));
 const beforeVote = (d: DinnerView) =>
   ["collecting", "choosing-time", "recommending"].includes(d.stage);
+const BUDGETS: { band: PriceBand; label: string }[] = [
+  { band: "low", label: "Low · £" },
+  { band: "medium", label: "Medium · ££" },
+  { band: "high", label: "High · £££" },
+];
 type Run = (command: Record<string, unknown>) => void;
 
 export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
@@ -40,6 +51,9 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [invitationLinks, setInvitationLinks] = useState<
+    { guestId: string; name: string; url: string }[]
+  >([]);
   useEffect(() => {
     if (dinner.stage === "confirmed") return;
     const interval = setInterval(() => {
@@ -57,6 +71,23 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
           setError(result.error ?? "We could not save that change.");
         else {
           if (result.message) setMessage(result.message);
+          if (result.invitationLinks)
+            setInvitationLinks((current) => [
+              ...current.filter(
+                (link) =>
+                  !result.invitationLinks!.some(
+                    (next) => next.guestId === link.guestId,
+                  ),
+              ),
+              ...result.invitationLinks!.map((link) => ({
+                ...link,
+                url: new URL(link.url, window.location.origin).href,
+              })),
+            ]);
+          if (command.type === "revoke-invite" || command.type === "reset")
+            setInvitationLinks((current) =>
+              current.filter((link) => link.guestId !== command.guestId),
+            );
           router.refresh();
         }
       } catch {
@@ -64,6 +95,14 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
       }
     });
   }
+  const commonBudgets = dinner.commonBudgetBands ?? [];
+  const selectedBudget =
+    dinner.budgetBand &&
+    (!commonBudgets.length || commonBudgets.includes(dinner.budgetBand))
+      ? dinner.budgetBand
+      : commonBudgets.length === 1
+        ? commonBudgets[0]
+        : undefined;
   const completed = dinner.guests.filter((g) => g.status !== "waiting").length;
   const included = dinner.guests.filter((g) =>
     dinner.includedIds?.includes(g.id),
@@ -192,7 +231,9 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
                           onClick={() => {
                             if (
                               window.confirm(
-                                `Reset ${g.name}’s reply? This deletes their saved answers, frees their name and removes access from their old browser.`,
+                                dinner.identityMode === "account"
+                                  ? `Reset ${g.name}’s reply? This deletes their saved answers, removes their account from this dinner and revokes their invitation. Generate a new personal link to invite them again.`
+                                  : `Reset ${g.name}’s reply? This deletes their saved answers, frees their name and removes access from their old browser.`,
                               )
                             )
                               run({ type: "reset", guestId: g.id });
@@ -205,7 +246,78 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
                   ))}
                 </div>
               </section>
-              {!dinner.guest && beforeVote(dinner) ? (
+              {dinner.organiser &&
+              dinner.identityMode === "account" &&
+              beforeVote(dinner) ? (
+                <section className="panel">
+                  <SectionHeading
+                    eyebrow="Private organiser controls"
+                    title="Personal invitations"
+                    text="Generate a link for each guest and send it to them privately. Each link only works with their invited email. Generating a fresh link replaces the previous link; no email is sent."
+                  />
+                  <div className="stack">
+                    {dinner.guests.map((g) => (
+                      <div key={g.id} className="invitation-control">
+                        <strong>{g.name}</strong>
+                        <div className="action-row">
+                          <Button
+                            className="button secondary"
+                            disabled={pending || g.taken}
+                            onClick={() =>
+                              run({ type: "issue-invite", guestId: g.id })
+                            }
+                          >
+                            Generate link for {g.name}
+                          </Button>
+                          <Button
+                            className="text-button"
+                            disabled={pending}
+                            onClick={() =>
+                              run({ type: "revoke-invite", guestId: g.id })
+                            }
+                          >
+                            Revoke link for {g.name}
+                          </Button>
+                        </div>
+                        {!g.taken &&
+                        invitationLinks.find(
+                          (link) => link.guestId === g.id,
+                        ) ? (
+                          <label className="field">
+                            Private link for {g.name}
+                            <input
+                              readOnly
+                              value={
+                                invitationLinks.find(
+                                  (link) => link.guestId === g.id,
+                                )!.url
+                              }
+                              onFocus={(e) => e.currentTarget.select()}
+                            />
+                          </label>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+              {!dinner.guest &&
+              dinner.identityMode === "account" &&
+              !dinner.organiser ? (
+                <section className="panel">
+                  <SectionHeading
+                    eyebrow="Your invitation"
+                    title="Sign in with your invited email"
+                    text="Open the personal invitation your organiser sent you, then sign in with that same email. The shared dinner link cannot claim a guest name."
+                  />
+                  <Link className="button" href="/account">
+                    Sign in
+                  </Link>
+                </section>
+              ) : null}
+              {!dinner.guest &&
+              dinner.identityMode !== "account" &&
+              beforeVote(dinner) ? (
                 <section className="panel">
                   <SectionHeading
                     eyebrow="Your invitation"
@@ -248,6 +360,53 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
                     Your organiser can extend the reply deadline if the group
                     needs more time.
                   </p>
+                </section>
+              ) : null}
+              {dinner.experience === "v2" &&
+              dinner.organiser &&
+              ["choosing-time", "recommending"].includes(dinner.stage) ? (
+                <section className="panel">
+                  <SectionHeading
+                    eyebrow="A budget together"
+                    title="Choose the group’s price band"
+                    text="Price bands are relative, not a guaranteed cost per person. Choose a shared band when one is available."
+                  />
+                  {!commonBudgets.length ? (
+                    <p role="status" className="feedback">
+                      No price band is accepted by every included guest. Reopen
+                      replies to review the conflict, or explicitly choose an
+                      organiser override below. An override does not mean
+                      everyone agreed to this budget.
+                    </p>
+                  ) : null}
+                  <div className="action-row">
+                    {BUDGETS.filter(
+                      (b) =>
+                        !commonBudgets.length || commonBudgets.includes(b.band),
+                    ).map((b) => (
+                      <Button
+                        className={`button ${selectedBudget === b.band ? "" : "secondary"}`}
+                        key={b.band}
+                        disabled={pending || selectedBudget === b.band}
+                        onClick={() => {
+                          if (
+                            commonBudgets.length ||
+                            window.confirm(
+                              `Choose ${b.label} as an organiser override? This price band is not accepted by every included guest. Check with the group before confirming a venue.`,
+                            )
+                          )
+                            run({ type: "budget", band: b.band });
+                        }}
+                      >
+                        {b.label}
+                        {selectedBudget === b.band
+                          ? " · Selected"
+                          : !commonBudgets.length
+                            ? " · Override"
+                            : ""}
+                      </Button>
+                    ))}
+                  </div>
                 </section>
               ) : null}
               {dinner.stage === "choosing-time" ? (
@@ -303,7 +462,10 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
                   {dinner.organiser ? (
                     <Button
                       className="button"
-                      disabled={pending}
+                      disabled={
+                        pending ||
+                        (dinner.experience === "v2" && !selectedBudget)
+                      }
                       onClick={() => run({ type: "recommend" })}
                     >
                       {pending ? "Finding areas…" : "Find meeting areas"}{" "}
@@ -318,7 +480,8 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
               {dinner.stage === "choosing-restaurant" ? (
                 <RestaurantChoice dinner={dinner} pending={pending} run={run} />
               ) : null}
-              {dinner.guest?.reply?.attending ? (
+              {dinner.guest?.reply?.attending &&
+              dinner.identityMode !== "account" ? (
                 <details className="panel email-details">
                   <summary>
                     Get the two dinner updates by email{" "}
@@ -391,7 +554,9 @@ export function DinnerExperience({ dinner }: { dinner: DinnerView }) {
               <p className="muted small">
                 The organiser can extend this if more time is needed.
               </p>
-              {dinner.organiser && beforeVote(dinner) ? (
+              {dinner.organiser &&
+              beforeVote(dinner) &&
+              dinner.identityMode !== "account" ? (
                 <CopyMessage dinner={dinner} />
               ) : null}
             </section>
@@ -500,6 +665,9 @@ function ReplyForm({
           diets: attending ? data.getAll("diets") : [],
           otherDiet: attending ? data.get("otherDiet") : "",
           cuisines: attending ? cuisines : {},
+          ...(dinner.experience === "v2"
+            ? { budgets: attending ? data.getAll("budgets") : [] }
+            : {}),
         },
       });
     } catch (cause) {
@@ -627,6 +795,31 @@ function ReplyForm({
                 this.
               </p>
             </div>
+            {dinner.experience === "v2" ? (
+              <fieldset className="field">
+                <legend>Which price bands work for you?</legend>
+                <p className="field-hint">
+                  Select every band you’re comfortable with. Medium is selected
+                  initially. Bands are relative; check the venue’s menu for
+                  actual prices. Your individual choices stay private.
+                </p>
+                <div className="check-grid">
+                  {BUDGETS.map((b) => (
+                    <label className="check-label" key={b.band}>
+                      <input
+                        type="checkbox"
+                        name="budgets"
+                        value={b.band}
+                        defaultChecked={(reply?.budgets ?? ["medium"]).includes(
+                          b.band,
+                        )}
+                      />
+                      {b.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            ) : null}
             <fieldset className="field">
               <legend>Dietary requirements</legend>
               <p className="field-hint">
@@ -933,29 +1126,59 @@ function RestaurantChoice({
             : "Your organiser is choosing and checking a restaurant."
         }
       />
+      {dinner.experience === "v2" ? (
+        dinner.recommendation ? (
+          <div className="feedback recommendation">
+            <span className="eyebrow">Recommended dinner spot</span>
+            <h3>
+              {dinner.restaurants.find(
+                (r) => r.id === dinner.recommendation!.restaurantId,
+              )?.name ?? "Recommended venue"}
+            </h3>
+            <p>{dinner.recommendation.reason}</p>
+            <p className="field-hint">
+              Review the evidence below. Your organiser still checks and
+              confirms the venue; alternatives and manual entry remain
+              available.
+            </p>
+          </div>
+        ) : (
+          <p className="feedback">
+            {dinner.recommendationFallback ??
+              "There is not enough verified venue evidence for a recommendation. Review the suggestions or enter a venue and check its details yourself."}
+          </p>
+        )
+      ) : null}
       {dinner.restaurants.length ? (
         <div className="restaurant-list">
-          {dinner.restaurants.map((restaurant) => (
-            <RestaurantCard
-              key={restaurant.id}
-              restaurant={restaurant}
-              action={
-                dinner.organiser ? (
-                  <Button
-                    className="button secondary"
-                    disabled={pending}
-                    onClick={() =>
-                      run({ type: "restaurant", restaurantId: restaurant.id })
-                    }
-                  >
-                    {dinner.restaurant?.id === restaurant.id
-                      ? "Selected"
-                      : "Choose this restaurant"}
-                  </Button>
-                ) : null
-              }
-            />
-          ))}
+          {[...dinner.restaurants]
+            .sort(
+              (a, b) =>
+                Number(b.id === dinner.recommendation?.restaurantId) -
+                Number(a.id === dinner.recommendation?.restaurantId),
+            )
+            .map((restaurant) => (
+              <RestaurantCard
+                key={restaurant.id}
+                restaurant={restaurant}
+                showEvidence={dinner.experience === "v2"}
+                action={
+                  dinner.organiser ? (
+                    <Button
+                      className="button secondary"
+                      disabled={pending}
+                      onClick={() =>
+                        run({ type: "restaurant", restaurantId: restaurant.id })
+                      }
+                    >
+                      {dinner.restaurant?.id === restaurant.id
+                        ? "Selected"
+                        : "Choose this restaurant"}
+                    </Button>
+                  ) : null
+                }
+              />
+            ))}
         </div>
       ) : (
         <p className="muted">
@@ -1074,8 +1297,10 @@ function RestaurantChoice({
 function RestaurantCard({
   restaurant,
   action,
+  showEvidence = false,
 }: {
   restaurant: Restaurant;
+  showEvidence?: boolean;
   action: ReactNode;
 }) {
   return (
@@ -1100,6 +1325,27 @@ function RestaurantCard({
           ? restaurant.dietaryEvidence.join(" · ")
           : "Dietary suitability unknown. Check with the venue."}
       </p>
+      {showEvidence ? (
+        restaurant.evidence ? (
+          <p className="field-hint">
+            {restaurant.evidence.source === "fixture"
+              ? "Synthetic preview evidence"
+              : "Venue evidence"}{" "}
+            · checked {dateTime(restaurant.evidence.checkedAt)} ·{" "}
+            {restaurant.evidence.priceBand} price · opening{" "}
+            {dateTime(restaurant.evidence.opening.start)} –{" "}
+            {dateTime(restaurant.evidence.opening.end)}.{" "}
+            {restaurant.evidence.diets.length
+              ? `Supported dietary requirements: ${restaurant.evidence.diets.join(", ")}.`
+              : "No dietary suitability verified."}
+          </p>
+        ) : (
+          <p className="field-hint">
+            Price, opening and dietary evidence has not been verified for an
+            automatic recommendation.
+          </p>
+        )
+      ) : null}
       <div className="action-row">
         {restaurant.sourceUrl ? (
           <a href={restaurant.sourceUrl} target="_blank" rel="noreferrer">

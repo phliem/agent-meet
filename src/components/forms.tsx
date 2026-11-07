@@ -55,7 +55,14 @@ export function Status({
   ) : null;
 }
 
-export function CreateDinner() {
+export function CreateDinner({
+  v2Enabled = false,
+  signedIn = false,
+}: {
+  v2Enabled?: boolean;
+  signedIn?: boolean;
+}) {
+  const [v2, setV2] = useState(false);
   const router = useRouter();
   const [mode, setMode] = useState("flexible");
   const [error, setError] = useState("");
@@ -67,6 +74,17 @@ export function CreateDinner() {
     startTransition(async () => {
       try {
         const result = await createDinner({
+          ...(v2 && v2Enabled && signedIn
+            ? {
+                experience: "v2",
+                identityMode: "account",
+                inviteEmails: String(data.get("inviteEmails") ?? "")
+                  .split("\n")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+                remindersEnabled: data.get("remindersEnabled") === "on",
+              }
+            : {}),
           title: data.get("title"),
           hostName: data.get("hostName"),
           names: String(data.get("names"))
@@ -93,6 +111,31 @@ export function CreateDinner() {
   }
   return (
     <form className="panel create-form" onSubmit={submit}>
+      {v2Enabled ? (
+        <fieldset className="field">
+          <legend>Planning experience</legend>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={v2}
+              disabled={!signedIn}
+              onChange={(e) => setV2(e.target.checked)}
+            />
+            Use V2 · personal invitations and shared budgets
+          </label>
+          <p className="field-hint">
+            {signedIn ? (
+              "Optional for this new dinner. Each guest signs in with their invited email. Existing dinners keep their original experience."
+            ) : (
+              <>
+                {" "}
+                <a href="/account">Sign in</a> to create a V2 dinner. You can
+                still create a classic dinner below.
+              </>
+            )}
+          </p>
+        </fieldset>
+      ) : null}
       <div className="field">
         <label htmlFor="title">Give your dinner a name</label>
         <input
@@ -126,6 +169,31 @@ export function CreateDinner() {
           One unique name per line. Include yourself if you’re joining dinner.
         </p>
       </div>
+      {v2 ? (
+        <>
+          <div className="field">
+            <label htmlFor="inviteEmails">Guest invitation emails</label>
+            <textarea
+              id="inviteEmails"
+              name="inviteEmails"
+              rows={4}
+              required
+              placeholder={
+                "alex@example.com\nsam@example.com\npriya@example.com"
+              }
+            />
+            <p className="field-hint">
+              One email per name, in the same order. Include your own email if
+              you’re attending. Emails stay private. You’ll share each personal
+              invitation yourself; creating a dinner sends no email.
+            </p>
+          </div>
+          <label className="check-label">
+            <input type="checkbox" name="remindersEnabled" />
+            Allow one reminder for guests who separately opt in
+          </label>
+        </>
+      ) : null}
       <fieldset className="field">
         <legend>Have you agreed on a date?</legend>
         <div className="segmented">

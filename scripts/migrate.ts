@@ -6,6 +6,7 @@ if (!url) throw new Error('Set DATABASE_URL or MIGRATION_DATABASE_URL.');
 const sql = postgres(url, { max: 1, prepare: false });
 try {
   await sql`CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz DEFAULT now())`;
+  await sql`ALTER TABLE schema_migrations ENABLE ROW LEVEL SECURITY`;
   const files = (await readdir(new URL('../migrations/', import.meta.url))).filter(name => name.endsWith('.sql')).sort();
   for (const name of files) {
     await sql.begin(async tx => {

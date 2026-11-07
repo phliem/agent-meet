@@ -5,12 +5,14 @@ import { readDinner } from './store';
 import { insist } from './domain';
 import { guestCookie, hostCookie, matches, digest } from './security';
 import { db } from './db';
+import { currentAccount, accountActor, type AccountIdentity } from './accounts';
 
 export async function credentials(id: string) {
   const jar = await cookies();
-  return { host: jar.get(hostCookie(id))?.value, guest: jar.get(guestCookie(id))?.value };
+  return { host: jar.get(hostCookie(id))?.value, guest: jar.get(guestCookie(id))?.value, account: await currentAccount() };
 }
-export function actorFor(dinner: Dinner, raw: { host?: string; guest?: string }) {
+export function actorFor(dinner: Dinner, raw: { host?: string; guest?: string; account?: AccountIdentity }) {
+  if (dinner.identityMode === 'account') return accountActor(dinner, raw.account);
   return { organiser: matches(raw.host, dinner.hostHash), guestId: dinner.guests.find(g => matches(raw.guest, g.claimHash))?.id };
 }
 export async function requireGuest(slug: string) {

@@ -25,7 +25,13 @@ The invitation output is a private access link. Keep it out of screenshots, issu
 - Group-chat copy actions and one-time Google/Apple calendar export.
 - Responsive Dinner Poll layout and marketing homepage.
 
-The remaining V2 tickets cover authenticated accounts/personal invitations, automatic deadline reminders, budget bands and recommending one venue for confirmation. These are not included in the current build.
+## Optional V2 experience
+
+Set `ENABLE_V2=true` to offer account-based creation for new dinners. An invited organiser signs in with a verified email and supplies an invitation email for each guest. Existing V1 dinners retain their original links and browser claims.
+
+The V2 implementation includes private email-bound invitations, cross-device accounts, consented reply reminders, low/medium/high budget preferences and an evidence-backed venue recommendation. Guests and organisers explicitly opt in to reminders. Unknown or stale venue information falls back to the shortlist and manual choice.
+
+Live email sign-in needs `SUPABASE_URL`, `SUPABASE_ANON_KEY` and a configured Supabase OTP email template. There is no fixture authentication bypass. Read [account setup](docs/accounts.md), [reminder operation](docs/reminders.md) and [budget and venue evidence](docs/v2-restaurants.md) before enabling it. The open restaurant data currently cannot establish the future opening hours and price evidence required for a live automatic venue recommendation. Fixture tests demonstrate the selection rules, not live restaurant coverage.
 
 ## Data and email modes
 
@@ -43,7 +49,9 @@ All database tables have row-level security enabled without browser policies. Th
 
 Migrations are explicit and tracked under `migrations/`. Do not run them on an existing production database without review and a backup. Deploying, paid service setup and applying changes to real data require their own release step.
 
-The application attempts event-triggered work after committed changes. Configure an authenticated frequent retry worker for production through `/api/jobs` or the documented local job runner. The worker also deletes expired dinners and dependent content. Vercel plan restrictions must be accounted for; a daily retry schedule cannot promise timely email delivery.
+The application attempts event-triggered work after committed changes. Per-dinner leases prevent simultaneous clicks and callbacks from duplicating provider work. Configure an authenticated frequent retry worker for production through `/api/jobs` or the documented local job runner. The worker also deletes expired dinners and dependent content. Vercel plan restrictions must be accounted for; a daily retry schedule cannot promise timely email delivery.
+
+Pilot invitations and permissions can be inspected privately with `corepack pnpm invite --list`. Revoke a pending invitation with `corepack pnpm invite --revoke-invite HASH`, or an organiser's creation permission with `corepack pnpm invite --revoke-access HASH`, using the record identifier from that list. Revoking creation permission does not revoke the separate organiser credential for dinners already created.
 
 ## Verification
 
@@ -54,6 +62,8 @@ The application attempts event-triggered work after committed changes. Configure
 - `corepack pnpm exec playwright test` with the local app and database running
 
 Database integration tests run when `DATABASE_URL` is configured. Use the isolated local database for tests. E2E test data is synthetic. Secret scanning and a review of the tracked file list and Git history are required before publishing.
+
+The unit/contract test command serialises test files because worker tests intentionally process the shared isolated test database queues. Individual concurrency tests still run competing claims, votes and workers in parallel.
 
 ## Open-source release
 

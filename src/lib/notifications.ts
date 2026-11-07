@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { db } from './db';
+import { runReminders } from './reminders';
 import type { Dinner, Guest } from './model';
 
 export type EmailMessage = { to: string; subject: string; text: string };
@@ -164,10 +165,11 @@ async function materializeUpdates() {
   }
 }
 
-export async function dispatchOutbox(limit = 10, send: EmailSender = resendSender) {
+export async function dispatchOutbox(limit = 10, send: EmailSender = resendSender, deadline = Infinity) {
   const sql = db();
   const counts = { sent: 0, fixture: 0, suppressed: 0, retried: 0 };
   for (let n = 0; n < limit; n++) {
+    if (Date.now() + 10_000 > deadline) break;
     const handled = await sql.begin(async tx => {
       const candidates = await tx`SELECT o.id, o.subscription_id, s.dinner_id FROM email_outbox o JOIN email_subscriptions s ON s.id = o.subscription_id WHERE o.status = 'pending' AND o.available_at <= now() ORDER BY o.created_at LIMIT 1`;
       const candidate = candidates[0];
@@ -197,6 +199,7 @@ export async function dispatchOutbox(limit = 10, send: EmailSender = resendSende
         return true;
       }
       const message = job.payload as EmailMessage;
+      if (Date.now() + 10_000 > deadline) return false;
       try {
         const status = await send({ to: message.to, subject: message.subject, text: message.text }, 'agent-meet/' + job.id);
         // Keep verification's unsubscribe link for subsequent updates; retain no message body in delivery records.
@@ -216,12 +219,17 @@ export async function dispatchOutbox(limit = 10, send: EmailSender = resendSende
 }
 
 export async function runJobs(options: { send?: EmailSender; limit?: number } = {}) {
+  const limit = Math.max(0, Math.min(options.limit ?? 4, 4));
+  const deadline = Date.now() + 45_000;
   await materializeUpdates();
-  const result = await dispatchOutbox(Math.min(options.limit || 10, 25), options.send);
+  const result = await dispatchOutbox(limit, options.send, deadline);
+  const used = Object.values(result).reduce((sum, count) => sum + count, 0);
+  const reminders = await runReminders(options.send ?? resendSender, appUrl(), Math.max(0, limit - used), Date.now, deadline);
+  await db()`DELETE FROM account_sessions WHERE expires_at <= now()`;
   await db()`DELETE FROM dinners WHERE expires_at <= now()`;
   await db()`DELETE FROM email_subscriptions WHERE scope = 'waitlist' AND verified_at IS NULL AND verification_expires_at <= now()`;
   await db()`DELETE FROM email_request_limits WHERE window_start < now() - interval '1 day'`;
-  return result;
+  return { ...result, reminders };
 }
 
 export function jobsAuthorised(authorization: string | null) {

@@ -1,4 +1,5 @@
 import type { Area, Dinner, Guest, Journey, Location, Restaurant, Station } from './model';
+import { effectiveBudgetBand, matchesBudget } from './v2-restaurants';
 
 type Fetcher = typeof fetch;
 type DataMode = 'fixture' | 'live';
@@ -83,8 +84,8 @@ function preferenceScore(restaurant: Restaurant, guests: Guest[]): [number, numb
   return [preferred, accepted];
 }
 
-export function rankRestaurants(restaurants: Venue[], guests: Guest[]): Restaurant[] {
-  return restaurants.filter(restaurant => restaurant.price !== 'high' && !guests.some(guest => {
+export function rankRestaurants(restaurants: Venue[], guests: Guest[], dinner?: Dinner, allowUnverifiedPrice = false): Restaurant[] {
+  return restaurants.filter(restaurant => (dinner ? matchesBudget(restaurant, dinner) || (allowUnverifiedPrice && dinner.experience === 'v2' && !!effectiveBudgetBand(dinner) && restaurant.price === 'unknown') : restaurant.price !== 'high') && !guests.some(guest => {
     const reply = guest.reply;
     return restaurant.cuisines.some(cuisine => reply?.cuisines[cuisine] === 'no') || reply?.diets.some(diet => restaurant.dietStatus[diet] === 'no');
   })).sort((left, right) => {
@@ -92,7 +93,7 @@ export function rankRestaurants(restaurants: Venue[], guests: Guest[]): Restaura
     return b[0] - a[0] || b[1] - a[1] || left.id.localeCompare(right.id);
   }).slice(0, 5).map(venue => ({
     id: venue.id, name: venue.name, address: venue.address, mapUrl: venue.mapUrl, sourceUrl: venue.sourceUrl,
-    cuisines: venue.cuisines, price: venue.price, dietaryEvidence: venue.dietaryEvidence, hours: venue.hours, station: venue.station,
+    cuisines: venue.cuisines, price: venue.price, dietaryEvidence: venue.dietaryEvidence, hours: venue.hours, station: venue.station, ...(venue.evidence ? { evidence: venue.evidence } : {}),
   }));
 }
 
@@ -136,10 +137,13 @@ export function restaurantFromOsm(value: unknown, station: Station, guests: Gues
 
 const fixtureNames = ['Example Noodle House', 'Example Garden Kitchen', 'Example Rice Table', 'Example Mezze Room', 'Example Supper Club'];
 const fixtureCuisines = [['Japanese', 'Korean'], ['Thai'], ['Indian'], ['Middle Eastern'], ['Italian']];
-function fixtureVenues(station: Station): Venue[] {
+function fixtureVenues(station: Station, dinner?: Dinner, checkedAt = new Date()): Venue[] {
+  const start = dinner?.selectedStart || dinner?.fixedStart;
+  const price = dinner?.experience === 'v2' ? effectiveBudgetBand(dinner) ?? 'medium' : 'medium';
   return fixtureNames.map((name, index) => ({
     id: `fixture-${station.id}-${index}`, name, address: `${index + 1} Example Lane, ${station.name}, London (fictional)`,
-    mapUrl: '', sourceUrl: '', cuisines: fixtureCuisines[index], price: 'medium',
+    mapUrl: '', sourceUrl: '', cuisines: fixtureCuisines[index], price,
+    ...(start && dinner?.experience === 'v2' ? { evidence: { source: 'fixture' as const, sourceUrl: '', checkedAt: checkedAt.toISOString(), priceBand: price, opening: { start, end: new Date(Date.parse(start) + dinner.duration * 60_000).toISOString() }, diets: Object.keys(dietKeys) } } : {}),
     dietaryEvidence: ['Synthetic menu data for testing. Confirm real requirements with a real venue.'],
     dietStatus: Object.fromEntries(Object.keys(dietKeys).map(diet => [diet, 'yes' as const])),
     hours: 'Example-only evening service. These are not real opening hours.', station: `Area station: ${station.name}`,
@@ -164,7 +168,7 @@ export function createProviders(options: ProviderOptions = {}) {
   const waiting: Array<() => void> = [];
 
   async function request(url: URL, init?: RequestInit): Promise<unknown> {
-    if (activeRequests >= 4) await new Promise<void>(resolve => waiting.push(resolve));
+    while (activeRequests >= 4) await new Promise<void>(resolve => waiting.push(resolve));
     activeRequests += 1;
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -255,8 +259,8 @@ export function createProviders(options: ProviderOptions = {}) {
     return stations;
   }
 
-  async function venues(station: Station, guests: Guest[]): Promise<Restaurant[]> {
-    if (mode === 'fixture') return rankRestaurants(fixtureVenues(station), guests);
+  async function venues(station: Station, guests: Guest[], dinner: Dinner, allowUnverifiedPrice = false): Promise<Restaurant[]> {
+    if (mode === 'fixture') return rankRestaurants(fixtureVenues(station, dinner, now()), guests, dinner, allowUnverifiedPrice);
     const query = `[out:json][timeout:8];nwr[amenity=restaurant](around:750,${station.lat},${station.lon});out center 60;`;
     const data = object(await request(new URL('https://overpass-api.de/api/interpreter'), {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'AgentMeet/0.1 (London dinner planner)' },
@@ -265,7 +269,7 @@ export function createProviders(options: ProviderOptions = {}) {
     if (data.remark) throw new ProviderError('unavailable', 'Restaurant search did not complete. Please try again.');
     if (!Array.isArray(data.elements)) throw new ProviderError('invalid-data', 'Restaurant data is unavailable. Please try again.');
     const restaurants = data.elements.map(value => restaurantFromOsm(value, station, guests)).filter((value): value is Venue => value !== null);
-    return rankRestaurants(restaurants, guests);
+    return rankRestaurants(restaurants, guests, dinner, allowUnverifiedPrice);
   }
 
   async function journey(origin: Location | Station, destination: Location | Station, when: Date, direction: 'arriving' | 'departing'): Promise<number | null> {
@@ -319,7 +323,14 @@ export function createProviders(options: ProviderOptions = {}) {
     const eligible: Area[] = [];
     // Check the fairest areas first to avoid querying restaurants for every candidate.
     for (let index = 0; index < ranked.length && eligible.length < 3; index += 3) {
-      const batch = await Promise.all(ranked.slice(index, index + 3).map(async area => (await venues(area, guests)).length ? area : null));
+      const batch = await Promise.all(ranked.slice(index, index + 3).map(async area => {
+        const candidates = await venues(area, guests, dinner, true);
+        if (!candidates.length) return null;
+        if (dinner.experience === 'v2' && !candidates.some(venue => matchesBudget(venue, dinner))) {
+          return { ...area, explanation: `${area.explanation} Nearby restaurant prices are unverified: no verified ${effectiveBudgetBand(dinner)} price match. Organiser verification or a manual venue is required.` };
+        }
+        return area;
+      }));
       eligible.push(...batch.filter((value): value is Area => value !== null));
     }
     return eligible.slice(0, 3);
@@ -329,7 +340,7 @@ export function createProviders(options: ProviderOptions = {}) {
     if (dinner.dataMode !== mode) throw new ProviderError('unavailable', 'This dinner was created in a different data mode. Restore its original mode or create a new dinner.');
     const guests = attending(dinner), station = dinner.areas.find(area => area.id === dinner.selectedAreaId);
     if (!station) throw new ProviderError('invalid-data', 'Choose a meeting area before finding restaurants.');
-    return venues(station, guests);
+    return venues(station, guests, dinner);
   }
 
   return { resolveLocation, recommendAreas, restaurantSuggestions };

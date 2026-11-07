@@ -6,7 +6,8 @@ export const dynamic = "force-dynamic";
 
 export default async function Home() {
   const context = await homeContext();
-  const source = process.env.NEXT_PUBLIC_REPO_URL;
+  const source =
+    process.env.NEXT_PUBLIC_REPO_URL || "https://github.com/phliem/agent-meet";
   return (
     <>
       <header className="site-header wrap">
@@ -16,6 +17,11 @@ export default async function Home() {
           </span>{" "}
           Agent Meet
         </Link>
+        {context.v2Enabled ? (
+          <Link className="quiet-link" href="/account">
+            {context.account ? "Your account" : "Sign in"}
+          </Link>
+        ) : null}
         <a className="quiet-link" href="#how-it-works">
           How it works <span aria-hidden="true">↗</span>
         </a>
@@ -171,7 +177,10 @@ export default async function Home() {
                 can return to manage it.
               </p>
             </div>
-            <CreateDinner />
+            <CreateDinner
+              v2Enabled={context.v2Enabled}
+              signedIn={!!context.account}
+            />
           </section>
         ) : null}
         <section id="waitlist" className="waitlist-section wrap">
