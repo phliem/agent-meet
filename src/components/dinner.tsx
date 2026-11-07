@@ -946,9 +946,21 @@ function AreaVote({
               : "The group is comparing these meeting areas."
         }
       />
+      {dinner.votesClosed && dinner.voteSummary ? (
+        <div className="feedback" role="note" aria-label="Vote results">
+          <p>
+            {dinner.voteSummary.received} of {dinner.voteSummary.total} votes received
+            {" · "}{dinner.voteSummary.total - dinner.voteSummary.received} missing.
+          </p>
+          <p className="field-hint">
+            Favourites count as acceptance. Missing votes do not count as agreement.
+          </p>
+        </div>
+      ) : null}
       <form className="stack" onSubmit={submit}>
         {dinner.areas.map((area) => {
           const own = area.journeys.find((j) => j.guestId === dinner.guest?.id);
+          const totals = dinner.voteSummary?.areas.find((result) => result.id === area.id);
           return (
             <fieldset
               key={area.id}
@@ -956,6 +968,12 @@ function AreaVote({
             >
               <legend>{area.name}</legend>
               <p className="muted small">{area.explanation}</p>
+              {dinner.votesClosed && dinner.voteSummary && totals ? (
+                <p className="field-hint">
+                  {totals.favourites} {totals.favourites === 1 ? "favourite" : "favourites"}
+                  {" · "}Accepted by {totals.acceptable} of {dinner.voteSummary.total} guests
+                </p>
+              ) : null}
               {own ? (
                 <div className="journey-pair">
                   <div>
@@ -1075,7 +1093,7 @@ function AreaVote({
               <p className="muted">
                 Choose an area after reviewing the group’s replies.
               </p>
-              {dinner.areas.map((area) => (
+              {dinner.areas.filter((area) => dinner.voteSummary?.eligibleAreaIds.includes(area.id)).map((area) => (
                 <Button
                   className="slot-button"
                   disabled={pending}
@@ -1127,6 +1145,27 @@ function RestaurantChoice({
             : "Your organiser is choosing and checking a restaurant."
         }
       />
+      {dinner.organiser && dinner.venueChecklist ? (
+        <section className="feedback stack" aria-label="Group food checklist">
+          <h3>Group food checklist</h3>
+          <div>
+            <strong>Dietary requirements</strong>
+            {dinner.venueChecklist.diets.length ? (
+              <ul>{dinner.venueChecklist.diets.map((diet) => <li key={diet}>{diet}</li>)}</ul>
+            ) : <p>No checkbox dietary requirements recorded.</p>}
+          </div>
+          <div>
+            <strong>Cuisines to avoid</strong>
+            {dinner.venueChecklist.rejectedCuisines.length ? (
+              <ul>{dinner.venueChecklist.rejectedCuisines.map((cuisine) => <li key={cuisine}>{cuisine}</li>)}</ul>
+            ) : <p>No rejected cuisines recorded.</p>}
+          </div>
+          <p className="field-hint">
+            Anything entered under Other stays private. Before confirming, check
+            any other dietary requirements and cuisine choices directly with your group.
+          </p>
+        </section>
+      ) : null}
       {dinner.experience === "v2" ? (
         dinner.recommendation ? (
           <div className="feedback recommendation">
@@ -1397,6 +1436,32 @@ function OrganiserTools({
     <details className="aside-block organiser-tools">
       <summary>Manage replies</summary>
       <div className="stack">
+        <form className="stack" onSubmit={(event) => {
+          event.preventDefault();
+          run({ type: "duration", duration: Number(new FormData(event.currentTarget).get("duration")) });
+        }}>
+          <div className="field">
+            <label htmlFor="updated-duration">Dinner duration · minutes</label>
+            <input
+              id="updated-duration"
+              name="duration"
+              type="number"
+              min={30}
+              max={720}
+              step={30}
+              required
+              defaultValue={dinner.duration}
+              aria-describedby="duration-help"
+            />
+            <p id="duration-help" className="field-hint">
+              Use 30-minute increments, up to 12 hours. Updating keeps replies and
+              recalculates shared times before voting starts.
+            </p>
+          </div>
+          <Button className="button secondary" type="submit" disabled={pending}>
+            Update dinner duration
+          </Button>
+        </form>
         {expired ? (
           <>
             <p className="muted small">

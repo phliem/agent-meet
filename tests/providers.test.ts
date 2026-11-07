@@ -204,6 +204,39 @@ test('live travel and restaurant requests use bounded candidate data and correct
   assert.ok(!JSON.stringify(areas).includes('Private origin'));
 });
 
+test('guests starting at the candidate station have zero travel without a same-point API error', async () => {
+  const station = CANDIDATE_STATIONS[0];
+  const alex = guest();
+  alex.reply!.location = { ...station, label: station.name, source: 'Transport for London' };
+  const fetcher: typeof fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith('/StopPoint/')) return json([station]);
+    if (url.hostname === 'overpass-api.de') return json({ elements: [{ id: 1, type: 'node', lat: station.lat, lon: station.lon, tags: { amenity: 'restaurant', name: 'Public example venue' } }] });
+    throw new Error('TfL should not be asked to route from a point to itself');
+  };
+  const areas = await createProviders({ mode: 'live', fetch: fetcher, now }).recommendAreas({ ...dinner([alex]), dataMode: 'live' });
+  assert.equal(areas.length, 1);
+  assert.equal(areas[0].longest, 0);
+  assert.deepEqual(areas[0].journeys, [{ guestId: alex.id, outbound: 0, homeward: 0 }]);
+});
+
+test('identical guest origins share route requests within one operation while retaining every guest comparison', async () => {
+  let routeCalls = 0;
+  const fetcher: typeof fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith('/StopPoint/')) return json([CANDIDATE_STATIONS[0]]);
+    if (url.hostname === 'overpass-api.de') return json({ elements: [{ id: 1, type: 'node', lat: 51.53, lon: -0.12, tags: { amenity: 'restaurant', name: 'Public example venue' } }] });
+    routeCalls++;
+    return json({ journeys: [{ duration: 25 }] });
+  };
+  const plan = { ...dinner([guest('one'), guest('two'), guest('three')]), dataMode: 'live' as const };
+  const areas = await createProviders({ mode: 'live', fetch: fetcher, now }).recommendAreas(plan);
+  assert.equal(routeCalls, 2, 'one outward and one return request');
+  assert.deepEqual(areas[0].journeys.map(journey => journey.guestId), ['one', 'two', 'three']);
+  await createProviders({ mode: 'live', fetch: fetcher, now }).recommendAreas(plan);
+  assert.equal(routeCalls, 4, 'private routes are not retained across operations');
+});
+
 test('a genuinely unavailable route excludes that area, while provider failures abort ranking', async () => {
   const fetcher: typeof fetch = async input => {
     const url = new URL(String(input));

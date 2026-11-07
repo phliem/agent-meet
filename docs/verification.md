@@ -4,8 +4,8 @@ Verified locally on 7 November 2026.
 
 - TypeScript no-emit check and ESLint pass.
 - Production Next.js build passes.
-- 73 unit, provider contract and isolated Postgres integration tests pass without skips.
-- Seven Playwright scenarios pass together against the production build, including the six-person V1 dinner flow, a separate-browser claim/privacy check, account-dinner public-view isolation, V2 venue-evidence/fallback presentation, form network-error recovery, availability-window removal, and the complete flexible-date no-overlap/reopen/early-vote-closure flow. Each spec owns its database fixture connection.
+- 81 unit, provider contract and isolated Postgres integration tests pass without skips.
+- Eight Playwright scenarios pass together against the production build, including the six-person V1 dinner flow, a separate-browser claim/privacy check, account-dinner public-view isolation, V2 venue-evidence/fallback presentation, form network-error recovery, availability-window removal, the complete flexible-date no-overlap/reopen/early-vote-closure flow, and tie/disagreement resolution. Each spec owns its database fixture connection.
 - Independent read-only review found a doubled worker budget and stale reminder eligibility time. Both were fixed with a regression test covering the shared delivery cap and a slow earlier send crossing a deadline.
 - A separate regression protects returning account guests opening an already-consumed invitation after the reply deadline.
 - Provider work is deduplicated per dinner with database leases, and stale results are rejected by version checks.
@@ -18,6 +18,7 @@ Verified locally on 7 November 2026.
 - An additional opt-in production browser test exercises the actual account controls and server actions against a local HTTPS Supabase REST double with a trusted temporary CA. It passes OTP validation/recovery, intended-email rejection, a second browser, private origins, budgets, consent, voting and confirmation. This is mocked provider coverage, not live Supabase or inbox verification.
 - Background provider and delivery work now shares an absolute deadline from action entry; exhausted worker budgets preserve queued events and still clean expired data. This prevents each phase starting a fresh time budget inside the page's 60-second function limit.
 - An optional GitHub worker workflow is prepared but inactive until the owner configures its production origin/secret and enables it. No production scheduler has been activated.
+- The organiser can change duration before voting; replies and the included group survive while dependent planning results are invalidated. Closed votes expose aggregate counts and only valid resolution choices. The organiser-only food checklist contains structured group diets and rejected cuisines without identities; Other notes stay private. Pure authority/privacy tests and browser coverage verify these behaviours.
 
 V2 requires explicit enablement for new dinners. Existing V1 dinners retain their original identity and behaviour. The Supabase authentication adapter has no development authentication bypass. Its network contract is tested with mocks; actual provider configuration, inbox OTP and cross-device HTTPS sign-in still need live verification.
 

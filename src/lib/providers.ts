@@ -170,6 +170,8 @@ export function createProviders(options: ProviderOptions = {}) {
   const deadline = Date.now() + (options.operationTimeoutMs ?? 25_000);
   let activeRequests = 0;
   const waiting: Array<() => void> = [];
+  // Private routes are deduplicated only within this operation, never globally.
+  const journeyRequests = new Map<string, Promise<number | null>>();
 
   async function request(url: URL, init?: RequestInit): Promise<unknown> {
     while (activeRequests >= 4) await new Promise<void>(resolve => waiting.push(resolve));
@@ -308,11 +310,22 @@ export function createProviders(options: ProviderOptions = {}) {
     return rankRestaurants(restaurants, guests, dinner, allowUnverifiedPrice);
   }
 
-  async function journey(origin: Location | Station, destination: Location | Station, when: Date, direction: 'arriving' | 'departing'): Promise<number | null> {
+  function journey(origin: Location | Station, destination: Location | Station, when: Date, direction: 'arriving' | 'departing'): Promise<number | null> {
+    if (origin.lat === destination.lat && origin.lon === destination.lon) return Promise.resolve(0);
     const parameters = londonJourneyParameters(when);
     const url = tflUrl(`/Journey/JourneyResults/${origin.lat},${origin.lon}/to/${destination.lat},${destination.lon}`, {
       ...parameters, timeIs: direction, journeyPreference: 'leasttime', mode: 'bus,overground,national-rail,tube,dlr,elizabeth-line,tram,walking', nationalSearch: 'false',
     });
+    const key = `${url.pathname}:${parameters.date}:${parameters.time}:${direction}`;
+    let result = journeyRequests.get(key);
+    if (!result) {
+      result = readJourney(url);
+      journeyRequests.set(key, result);
+    }
+    return result;
+  }
+
+  async function readJourney(url: URL): Promise<number | null> {
     const response = await request(url);
     if (response === null) throw new ProviderError('unavailable', 'Journey data is unavailable. Please try again.');
     const data = object(response);

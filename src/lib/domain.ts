@@ -12,7 +12,8 @@ export function insist(condition: unknown, message: string): asserts condition {
 const iso = z.string().datetime({ offset: true });
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(s => !Number.isNaN(Date.parse(s + 'T12:00:00Z')) && new Date(s + 'T12:00:00Z').toISOString().slice(0, 10) === s);
 const text = (max: number) => z.string().trim().min(1).max(max);
-const createSchema = z.object({ title: text(100), hostName: text(80), names: z.array(text(80)).min(1).max(24), mode: z.enum(['fixed', 'flexible']), dateStart: day.optional(), dateEnd: day.optional(), fixedStart: iso.optional(), duration: z.coerce.number().int().min(30).max(720).refine(n => n % 30 === 0), deadline: iso, experience: z.literal('v2').optional(), identityMode: z.literal('account').optional(), inviteEmails: z.array(z.string().trim().toLowerCase().email().max(254)).max(24).optional(), remindersEnabled: z.boolean().optional() });
+const durationSchema = z.coerce.number().int().min(30).max(720).refine(n => n % 30 === 0);
+const createSchema = z.object({ title: text(100), hostName: text(80), names: z.array(text(80)).min(1).max(24), mode: z.enum(['fixed', 'flexible']), dateStart: day.optional(), dateEnd: day.optional(), fixedStart: iso.optional(), duration: durationSchema, deadline: iso, experience: z.literal('v2').optional(), identityMode: z.literal('account').optional(), inviteEmails: z.array(z.string().trim().toLowerCase().email().max(254)).max(24).optional(), remindersEnabled: z.boolean().optional() });
 export function newDinner(input: unknown, hostHash: string, now = new Date()): Dinner {
   const parsed = createSchema.safeParse(input);
   insist(parsed.success, 'Check the dinner title, guest names, date, deadline and duration.');
@@ -110,7 +111,28 @@ export function applyCommand(d: Dinner, actor: Actor, input: unknown, now = Date
   insist(p.success, 'Unknown action.');
   const c = p.data;
   insist(Date.parse(d.expiresAt) > now, 'This dinner link has expired.');
-  if (c.type === 'budget') {
+  if (c.type === 'duration') {
+    requireHost(actor);
+    insist(preVote(d), 'Dinner duration is locked once area voting starts.');
+    const duration = durationSchema.safeParse(c.duration);
+    insist(duration.success, 'Choose a dinner duration of 30–720 minutes in half-hour increments.');
+    if (d.duration === duration.data) return;
+    d.duration = duration.data;
+    d.selectedStart = undefined; d.selectedAreaId = undefined;
+    d.areas = []; d.restaurants = []; d.restaurant = undefined; d.recommendation = undefined;
+    d.stage = 'collecting';
+    // Duration changes neither attendance nor budget. Preserve an explicitly
+    // included group while recalculating readiness and the selected interval.
+    const includedIds = d.includedIds;
+    progress(d);
+    if (includedIds) d.includedIds = includedIds;
+    if (!activeGuests(d).every(g => g.reply)) d.notice = 'Dinner duration updated. Waiting for the included guests to reply before planning resumes.';
+    else if (attending(d).length) d.notice = d.mode === 'fixed'
+      ? 'Dinner duration updated. Meeting areas will be checked again for the new dinner and return time.'
+      : sharedSlots(d, now).length
+        ? 'Dinner duration updated. Choose a shared time that fits the new duration.'
+        : 'No shared time fits the new duration. Shorten the dinner or widen the date window and reopen replies.';
+  } else if (c.type === 'budget') {
     requireHost(actor);
     insist(d.experience === 'v2' && ['choosing-time', 'recommending'].includes(d.stage), 'Choose the budget after replies and before area voting.');
     const band = z.enum(['low', 'medium', 'high']).safeParse(c.band);

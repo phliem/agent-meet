@@ -27,6 +27,60 @@ test('shared slots fit the whole adjustable duration for every attendee', () => 
   const d = dinner(); reply(d, d.guests[0].id); reply(d, d.guests[1].id, '2026-11-20T20:00:00Z', '2026-11-20T22:30:00Z');
   assert.deepEqual(sharedSlots(d, now), ['2026-11-20T20:00:00.000Z', '2026-11-20T20:30:00.000Z']);
 });
+test('organiser duration changes recover a shorter overlap and invalidate a chosen slot', () => {
+  const d = dinner();
+  d.guests.forEach(g => reply(d, g.id, '2026-11-20T19:00:00Z', '2026-11-20T20:30:00Z'));
+  assert.deepEqual(sharedSlots(d, now), []);
+  const replies = structuredClone(d.guests);
+  applyCommand(d, host, { type: 'duration', duration: 90 }, now);
+  assert.equal(d.stage, 'choosing-time');
+  assert.deepEqual(sharedSlots(d, now), ['2026-11-20T19:00:00.000Z']);
+  assert.deepEqual(d.guests, replies);
+  applyCommand(d, host, { type: 'slot', start: sharedSlots(d, now)[0] }, now);
+  const includedIds = [...d.includedIds!];
+  applyCommand(d, host, { type: 'duration', duration: 120 }, now);
+  assert.equal(d.selectedStart, undefined);
+  assert.equal(d.stage, 'choosing-time');
+  assert.deepEqual(d.includedIds, includedIds);
+  assert.deepEqual(sharedSlots(d, now), []);
+  assert.match(d.notice!, /Shorten.*widen/);
+});
+test('fixed dinner duration replans ready attendees and preserves budgets and included group', () => {
+  const d = dinner(true);
+  d.guests.forEach(g => reply(d, g.id));
+  d.guests.push({ id: 'excluded', name: 'Excluded' });
+  const includedIds = [...d.includedIds!];
+  d.budgetBand = 'medium';
+  d.areas = areas;
+  d.selectedAreaId = 'stale';
+  d.restaurants = [{ id: 'stale', name: 'Stale', address: 'Example', mapUrl: '', sourceUrl: '', cuisines: [], price: 'medium', dietaryEvidence: [], hours: 'Unknown' }];
+  d.restaurant = d.restaurants[0];
+  d.recommendation = { restaurantId: 'stale', reason: 'Old interval' };
+  applyCommand(d, host, { type: 'duration', duration: 150 }, now);
+  assert.equal(d.stage, 'recommending');
+  assert.equal(d.selectedStart, d.fixedStart);
+  assert.deepEqual(d.includedIds, includedIds);
+  assert.equal(d.budgetBand, 'medium');
+  assert.deepEqual(d.areas, []); assert.deepEqual(d.restaurants, []);
+  assert.equal(d.restaurant, undefined); assert.equal(d.selectedAreaId, undefined); assert.equal(d.recommendation, undefined);
+  assert.match(d.notice!, /return time/);
+});
+test('duration changes keep incomplete collection and reject unauthorised, invalid and locked updates', () => {
+  const d = dinner();
+  reply(d, d.guests[0].id);
+  applyCommand(d, host, { type: 'duration', duration: 30 }, now);
+  assert.equal(d.stage, 'collecting');
+  assert.ok(d.guests[0].reply); assert.equal(d.guests[1].reply, undefined);
+  assert.throws(() => applyCommand(d, { organiser: false }, { type: 'duration', duration: 90 }, now), /organiser/);
+  for (const duration of [0, -30, 45, 90.5, 750, 'invalid']) {
+    assert.throws(() => applyCommand(d, host, { type: 'duration', duration }, now), /half-hour/);
+    assert.equal(d.duration, 30);
+  }
+  for (const stage of ['area-voting', 'choosing-restaurant', 'confirmed'] as const) {
+    d.stage = stage;
+    assert.throws(() => applyCommand(d, host, { type: 'duration', duration: 90 }, now), /locked/);
+  }
+});
 test('fixed date skips the overlap and slot choice', () => {
   const d = dinner(true); d.guests.forEach(g => reply(d, g.id));
   assert.equal(d.stage, 'recommending'); assert.equal(d.selectedStart, d.fixedStart); assert.equal(d.includedIds?.length, 2);

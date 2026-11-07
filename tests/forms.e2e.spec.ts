@@ -4,7 +4,7 @@ import postgres from 'postgres';
 // Each spec owns its fixture connection; Playwright may reuse a worker across files.
 const sql = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
 import { newDinner } from '../src/lib/domain';
-import { digest, guestCookie, token } from '../src/lib/security';
+import { digest, guestCookie, hostCookie, token } from '../src/lib/security';
 
 const day = (offset: number) => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
 
@@ -97,6 +97,9 @@ test('flexible dinner recovers from no overlap and closes voting with an explici
     await expect(host.getByRole('heading', { name: 'Your dinner details' })).toBeVisible();
     await guest.goto(path);
     await guest.getByRole('button', { name: /Priya.*That’s me/ }).click();
+    await guest.getByLabel('Vegan', { exact: true }).check();
+    await guest.getByLabel('Mexican', { exact: true }).selectOption('no');
+    await guest.getByLabel('Anything else?', { exact: true }).fill('Synthetic private food note');
     await availability(guest, day(8), '19:00', '21:00', 'Save my reply');
     await expect(guest.getByRole('heading', { name: 'Your dinner details' })).toBeVisible();
     await declined.goto(path);
@@ -107,6 +110,10 @@ test('flexible dinner recovers from no overlap and closes voting with an explici
     await host.reload();
     await expect(host.getByRole('heading', { name: 'No shared time yet' })).toBeVisible();
     await host.getByText('Manage replies', { exact: true }).click();
+    await host.getByLabel('Dinner duration · minutes', { exact: true }).fill('90');
+    await host.getByRole('button', { name: 'Update dinner duration', exact: true }).click();
+    await expect(host.locator('.dinner-meta')).toContainText('1.5 hours');
+    await expect(host.getByRole('heading', { name: 'No shared time yet' })).toBeVisible();
     await host.getByText('Widen the date window', { exact: true }).click();
     await host.getByLabel('First possible date', { exact: true }).fill(day(7));
     await host.getByLabel('Last possible date', { exact: true }).fill(day(9));
@@ -124,12 +131,27 @@ test('flexible dinner recovers from no overlap and closes voting with an explici
     await host.locator('.area-card').first().getByRole('radio', { name: 'My favourite' }).check();
     await host.getByRole('button', { name: 'Save my vote', exact: true }).click();
     await expect(host.getByRole('button', { name: 'Update my vote', exact: true })).toBeVisible();
+    await expect(host.getByRole('note', { name: 'Vote results' })).toHaveCount(0);
     host.once('dialog', dialog => dialog.accept());
     await host.getByRole('button', { name: 'Close voting', exact: true }).click();
     await expect(host.getByRole('heading', { name: 'The votes are in' })).toBeVisible();
+    await expect(host.getByRole('note', { name: 'Vote results' })).toContainText('1 of 2 votes received · 1 missing.');
+    await expect(host.locator('.area-card').first()).toContainText('1 favourite · Accepted by 1 of 2 guests');
+    await expect(host.locator('.area-card').nth(1)).toContainText('0 favourites · Accepted by 0 of 2 guests');
+    await expect(host.locator('.organiser-vote button')).toHaveCount(await host.locator('.area-card').count());
+    await guest.reload();
+    await expect(guest.getByRole('note', { name: 'Vote results' })).toContainText('1 of 2 votes received · 1 missing.');
+    await expect(guest.locator('.organiser-vote button')).toHaveCount(0);
     await expect(host.getByRole('heading', { name: 'Find your dinner spot' })).toHaveCount(0);
     await host.locator('.organiser-vote button').first().click();
     await expect(host.getByRole('heading', { name: 'Find your dinner spot' })).toBeVisible({ timeout: 45000 });
+    await expect(host.getByRole('region', { name: 'Group food checklist' })).toContainText('Vegan');
+    await expect(host.getByRole('region', { name: 'Group food checklist' })).toContainText('Mexican');
+    await expect(host.locator('body')).not.toContainText('Synthetic private food note');
+    await guest.reload();
+    await expect(guest.getByRole('heading', { name: 'The area is chosen' })).toBeVisible();
+    await expect(guest.getByRole('region', { name: 'Group food checklist' })).toHaveCount(0);
+    await expect(host.getByText('Anything entered under Other stays private. Before confirming, check any other dietary requirements and cuisine choices directly with your group.')).toBeVisible();
     await host.getByText('Have somewhere in mind? Enter a restaurant').click();
     await host.getByLabel('Restaurant name', { exact: true }).fill('Recovery Example Kitchen');
     await host.getByLabel('Street address').fill('9 Example Street, London');
@@ -145,6 +167,7 @@ test('flexible dinner recovers from no overlap and closes voting with an explici
     const id = path.split('/').at(-1)!;
     const [row] = await sql`SELECT document FROM dinners WHERE id=${id}`;
     expect(row.document.stage).toBe('confirmed');
+    expect(row.document.duration).toBe(90);
     expect(row.document.guests[1].ballot).toBeUndefined();
     expect(row.document.guests[2].reply.attending).toBe(false);
     expect(row.document.includedIds).toHaveLength(2);
@@ -152,4 +175,36 @@ test('flexible dinner recovers from no overlap and closes voting with an explici
   } finally {
     await Promise.all(contexts.map(context => context.close()));
   }
+});
+
+
+test('closed voting shows aggregate totals and limits tie choices to eligible areas', async ({ page, context, baseURL }) => {
+  const raw = token();
+  const dinner = newDinner({ title: 'Closed vote resolution', hostName: 'Host', names: ['Alex', 'Sam'], mode: 'fixed', fixedStart: day(7) + 'T19:00:00Z', duration: 120, deadline: day(1) + 'T12:00:00Z' }, digest(raw));
+  dinner.stage = 'area-voting';
+  dinner.votesClosed = true;
+  dinner.includedIds = dinner.guests.map(guest => guest.id);
+  dinner.selectedStart = dinner.fixedStart;
+  dinner.areas = ['North', 'Central', 'South'].map((name, index) => ({ id: `area-${index}`, name, lat: 51.5, lon: -0.1, journeys: [], longest: 20, explanation: 'Synthetic journey comparison.' }));
+  for (const guest of dinner.guests) guest.reply = { attending: true, availability: [], diets: [], otherDiet: '', cuisines: {} };
+  dinner.guests[0].ballot = { favourite: 'area-0', acceptable: ['area-1'], none: false };
+  dinner.guests[1].ballot = { favourite: 'area-1', acceptable: ['area-0'], none: false };
+  await sql`INSERT INTO dinners (id, document, expires_at) VALUES (${dinner.id}, ${sql.json(dinner)}, ${dinner.expiresAt})`;
+  await context.addCookies([{ name: hostCookie(dinner.id), value: raw, url: baseURL! }]);
+  await page.goto('/d/' + dinner.id);
+  await expect(page.getByRole('note', { name: 'Vote results' })).toContainText('2 of 2 votes received · 0 missing.');
+  await expect(page.locator('.area-card').first()).toContainText('1 favourite · Accepted by 2 of 2 guests');
+  await expect(page.locator('.area-card').nth(2)).toContainText('0 favourites · Accepted by 0 of 2 guests');
+  await expect(page.getByRole('button', { name: /Choose North/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Choose Central/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Choose South/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Update dinner duration', exact: true })).toHaveCount(0);
+  // If nobody accepts a common area, the organiser can resolve disagreement
+  // explicitly; totals remain honest and no individual ballot is revealed.
+  dinner.guests[1].ballot = { favourite: null, acceptable: [], none: true };
+  await sql`UPDATE dinners SET document=${sql.json(dinner)} WHERE id=${dinner.id}`;
+  await page.reload();
+  await expect(page.locator('.area-card').first()).toContainText('1 favourite · Accepted by 1 of 2 guests');
+  await expect(page.getByRole('button', { name: /Choose South/ })).toBeVisible();
+  await expect(page.locator('.organiser-vote button')).toHaveCount(3);
 });

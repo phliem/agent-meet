@@ -13,6 +13,8 @@ import { googleCalendarUrl } from './calendar';
 import { resolveLocation } from './providers';
 import { planDinner } from './planning';
 import { runJobs } from './notifications';
+import { voteSummary } from './vote-summary';
+import { venueChecklist } from './venue-checklist';
 import type { ActionResult, DinnerView } from './model';
 import { compatibleBudgetBands, restaurantRecommendation, effectiveBudgetBand } from './v2-restaurants';
 import { accountCookie, accountCookieOptions, currentAccount, requireAccount, normaliseEmail, providerRequest, verifiedIdentity, disableAccountAccess, issueInvitation, revokeInvitation, acceptOrResumeInvitation } from './accounts';
@@ -80,7 +82,7 @@ export async function loadDinner(id: string): Promise<DinnerView | null> {
   const recommendation = dinner.stage === 'choosing-restaurant' ? restaurantRecommendation(dinner) : {};
   const { hostHash: _hostHash, guests: _guests, organiserAccountId: _accountId, ...publicDinner } = dinner;
   void _hostHash; void _guests; void _accountId;
-  return { ...publicDinner, recommendation: recommendation.recommendation, recommendationFallback: recommendation.fallbackReason, commonBudgetBands: compatibleBudgetBands(dinner), accountRequired: dinner.identityMode === 'account' && !mine && !actor.organiser, guests: dinner.guests.map(g => ({ id: g.id, name: g.name, taken: !!g.claimHash, status: !g.reply ? 'waiting' : g.reply.attending ? 'replied' : 'declined', voted: !!g.ballot })), organiser: actor.organiser, guest: mine ? { id: mine.id, name: mine.name, reply: mine.reply, ballot: mine.ballot } : null, slots: dinner.stage === 'choosing-time' ? sharedSlots(dinner) : [], canReply: ['collecting', 'choosing-time', 'recommending'].includes(dinner.stage) && Date.now() < Date.parse(dinner.deadline) && (!dinner.includedIds || !!mine && dinner.includedIds.includes(mine.id)), googleCalendarUrl: dinner.stage === 'confirmed' ? googleCalendarUrl(dinner) : undefined };
+  return { ...publicDinner, voteSummary: voteSummary(dinner), venueChecklist: venueChecklist(dinner, actor.organiser), recommendation: recommendation.recommendation, recommendationFallback: recommendation.fallbackReason, commonBudgetBands: compatibleBudgetBands(dinner), accountRequired: dinner.identityMode === 'account' && !mine && !actor.organiser, guests: dinner.guests.map(g => ({ id: g.id, name: g.name, taken: !!g.claimHash, status: !g.reply ? 'waiting' : g.reply.attending ? 'replied' : 'declined', voted: !!g.ballot })), organiser: actor.organiser, guest: mine ? { id: mine.id, name: mine.name, reply: mine.reply, ballot: mine.ballot } : null, slots: dinner.stage === 'choosing-time' ? sharedSlots(dinner) : [], canReply: ['collecting', 'choosing-time', 'recommending'].includes(dinner.stage) && Date.now() < Date.parse(dinner.deadline) && (!dinner.includedIds || !!mine && dinner.includedIds.includes(mine.id)), googleCalendarUrl: dinner.stage === 'confirmed' ? googleCalendarUrl(dinner) : undefined };
 }
 export async function dinnerAction(id: string, input: unknown): Promise<ActionResult> {
   // The page's 60-second function limit includes its after() callbacks. Keep a
